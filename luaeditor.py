@@ -21,22 +21,101 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 # ==============================
-# 이벤트 코드 ↔ 한글표기
+# 이벤트 코드 ↔ 한글표기 및 arg 메타데이터 (G HUB API 문서 기반)
 # ==============================
-EVENT_LABELS = {
-    "MOUSE_BUTTON_PRESSED": "마우스 버튼 눌림",
-    "MOUSE_BUTTON_RELEASED": "마우스 버튼 뗌",
-    "G_PRESSED": "G 키 눌림",
-    "G_RELEASED": "G 키 뗌",
-    "PROFILE_ACTIVATED": "프로필 활성화",
+EVENT_DEFS = {
+    "PROFILE_ACTIVATED": {
+        "label": "프로필 활성화",
+        "arg": None,
+        "details": ["이 이벤트는 최초 실행 시 한 번 발생합니다."],
+    },
+    "PROFILE_DEACTIVATED": {
+        "label": "프로필 비활성화",
+        "arg": None,
+        "details": ["프로필이 비활성화될 때 마지막으로 발생합니다."],
+    },
+    "G_PRESSED": {
+        "label": "G 키 눌림",
+        "arg": {
+            "label": "G 키 번호",
+            "min": 1,
+            "max": 18,
+            "default": 1,
+            "allow_all": True,
+            "hint": "G1=1, …, G18=18",
+        },
+        "details": ["arg는 누른 G 키 번호입니다."],
+    },
+    "G_RELEASED": {
+        "label": "G 키 뗌",
+        "arg": {
+            "label": "G 키 번호",
+            "min": 1,
+            "max": 18,
+            "default": 1,
+            "allow_all": True,
+            "hint": "G1=1, …, G18=18",
+        },
+        "details": ["arg는 뗀 G 키 번호입니다."],
+    },
+    "M_PRESSED": {
+        "label": "M 키 눌림",
+        "arg": {
+            "label": "M 키 번호",
+            "min": 1,
+            "max": 3,
+            "default": 1,
+            "allow_all": True,
+            "hint": "M1=1, M2=2, M3=3",
+        },
+        "details": ["arg는 현재 눌린 M 키의 번호입니다."],
+    },
+    "M_RELEASED": {
+        "label": "M 키 뗌",
+        "arg": {
+            "label": "M 키 번호",
+            "min": 1,
+            "max": 3,
+            "default": 1,
+            "allow_all": True,
+            "hint": "M1=1, M2=2, M3=3",
+        },
+        "details": ["arg는 떼어진 M 키의 번호입니다."],
+    },
+    "MOUSE_BUTTON_PRESSED": {
+        "label": "마우스 버튼 눌림",
+        "arg": {
+            "label": "마우스 버튼",
+            "min": 1,
+            "max": 5,
+            "default": 1,
+            "allow_all": True,
+            "hint": "1=좌, 2=중, 3=우, 4=X1, 5=X2",
+        },
+        "details": [
+            "arg는 눌린 마우스 버튼 번호입니다.",
+            "좌클릭(1)을 받으려면 EnablePrimaryMouseButtonEvents(true) 필요.",
+        ],
+    },
+    "MOUSE_BUTTON_RELEASED": {
+        "label": "마우스 버튼 뗌",
+        "arg": {
+            "label": "마우스 버튼",
+            "min": 1,
+            "max": 5,
+            "default": 1,
+            "allow_all": True,
+            "hint": "1=좌, 2=중, 3=우, 4=X1, 5=X2",
+        },
+        "details": [
+            "arg는 뗀 마우스 버튼 번호입니다.",
+            "좌클릭(1)을 받으려면 EnablePrimaryMouseButtonEvents(true) 필요.",
+        ],
+    },
 }
-EVENT_ORDER = [
-    "MOUSE_BUTTON_PRESSED",
-    "MOUSE_BUTTON_RELEASED",
-    "G_PRESSED",
-    "G_RELEASED",
-    "PROFILE_ACTIVATED",
-]
+
+EVENT_ORDER = list(EVENT_DEFS.keys())
+EVENT_LABELS = {code: meta["label"] for code, meta in EVENT_DEFS.items()}
 
 # 표시용(한글) ↔ 코드 역매핑 헬퍼
 LABEL_TO_CODE = {v: k for k, v in EVENT_LABELS.items()}
@@ -65,6 +144,11 @@ FUNCTION_CATALOG = [
      "call": "Sleep(%(ms)d)",
      "args": [{"name": "ms", "label": "대기(ms)", "type": "int", "default": 50, "min": 0, "max": 600000}],
      "desc": "밀리초 지연"},
+
+    {"name": "ClearLog", "cat": "System", "icon": "🧹",
+     "call": "ClearLog()",
+     "args": [],
+     "desc": "스크립트 로그 창 비우기"},
 
     {"name": "PressAndReleaseKey", "cat": "Keyboard", "icon": "⌨️",
      "call": "PressAndReleaseKey(%(k1)s%(k2_opt)s)",
@@ -106,22 +190,66 @@ FUNCTION_CATALOG = [
      "args": [{"name": "amount", "label": "휠(+위/-아래)", "type": "int", "default": -1, "min": -100, "max": 100}],
      "desc": "마우스 휠 스크롤"},
 
+    {"name": "PressAndReleaseMouseButton", "cat": "Mouse", "icon": "🖱️⚡",
+     "call": "PressAndReleaseMouseButton(%(button)s)",
+     "args": [{"name": "button", "label": "마우스 버튼", "type": "choice",
+               "choices": ["좌(1)", "중(2)", "우(3)", "X1(4)", "X2(5)"], "default": "좌(1)"}],
+     "desc": "마우스 버튼 클릭"},
+
     {"name": "PressMouseButton", "cat": "Mouse", "icon": "🖱️⬇️",
      "call": "PressMouseButton(%(button)s)",
      "args": [{"name": "button", "label": "마우스 버튼", "type": "choice",
-               "choices": ["좌(1)", "우(2)", "중(3)"], "default": "좌(1)"}],
+               "choices": ["좌(1)", "중(2)", "우(3)", "X1(4)", "X2(5)"], "default": "좌(1)"}],
      "desc": "마우스 버튼 누르기"},
 
     {"name": "ReleaseMouseButton", "cat": "Mouse", "icon": "🖱️⬆️",
      "call": "ReleaseMouseButton(%(button)s)",
      "args": [{"name": "button", "label": "마우스 버튼", "type": "choice",
-               "choices": ["좌(1)", "우(2)", "중(3)"], "default": "좌(1)"}],
+               "choices": ["좌(1)", "중(2)", "우(3)", "X1(4)", "X2(5)"], "default": "좌(1)"}],
      "desc": "마우스 버튼 떼기"},
 
     {"name": "EnablePrimaryMouseButtonEvents", "cat": "System", "icon": "⚙️",
      "call": "EnablePrimaryMouseButtonEvents(%(enable)s)",
      "args": [{"name": "enable", "label": "좌클릭 이벤트 전달", "type": "bool", "default": True}],
      "desc": "좌클릭 이벤트 전달 설정"},
+
+    {"name": "MoveMouseToVirtual", "cat": "Cursor", "icon": "🖥️",
+     "call": "MoveMouseToVirtual(%(x)d, %(y)d)",
+     "args": [
+         {"name": "x", "label": "X(px)", "type": "int", "default": "__CENTER_X__"},
+         {"name": "y", "label": "Y(px)", "type": "int", "default": "__CENTER_Y__"},
+     ],
+     "desc": "멀티 모니터 절대 이동"},
+
+    {"name": "OutputDebugMessage", "cat": "System", "icon": "🐞",
+     "call": "OutputDebugMessage(%(text)s)",
+     "args": [{"name": "text", "label": "디버그 텍스트", "type": "str", "default": '"Debug: %d\\n"'}],
+     "desc": "Windows 디버거로 로그"},
+
+    {"name": "PlayMacro", "cat": "Macro", "icon": "▶️",
+     "call": "PlayMacro(%(name)s)",
+     "args": [{"name": "name", "label": "매크로 이름", "type": "str", "default": '"My Macro"'}],
+     "desc": "기존 매크로 재생"},
+
+    {"name": "PressMacro", "cat": "Macro", "icon": "⏺️",
+     "call": "PressMacro(%(name)s)",
+     "args": [{"name": "name", "label": "매크로 이름", "type": "str", "default": '"My Macro"'}],
+     "desc": "매크로 키 누름만 수행"},
+
+    {"name": "ReleaseMacro", "cat": "Macro", "icon": "⏏️",
+     "call": "ReleaseMacro(%(name)s)",
+     "args": [{"name": "name", "label": "매크로 이름", "type": "str", "default": '"My Macro"'}],
+     "desc": "매크로 키 뗌만 수행"},
+
+    {"name": "AbortMacro", "cat": "Macro", "icon": "⛔",
+     "call": "AbortMacro()",
+     "args": [],
+     "desc": "실행 중 매크로 중지"},
+
+    {"name": "SetMKeyState", "cat": "Keyboard", "icon": "🎛️",
+     "call": "SetMKeyState(%(mkey)d)",
+     "args": [{"name": "mkey", "label": "M키 상태", "type": "int", "default": 1, "min": 1, "max": 3}],
+     "desc": "M키 모드 전환"},
 ]
 CATALOG_BY_NAME = {f["name"]: f for f in FUNCTION_CATALOG}
 
@@ -165,9 +293,8 @@ def validate_value(spec: dict, value_str):
 
 def format_call(call_fmt: str, args: dict) -> str:
     params = dict(args)
-    if "k2" in params:
-        k2 = str(params.get("k2", "")).strip()
-        params["k2_opt"] = f", {k2}" if k2 else ""
+    has_k2 = "k2" in params
+    k2_raw = str(params.get("k2", "")).strip() if has_k2 else ""
     # 불리언 → Lua 소문자
     for k, v in list(params.items()):
         if isinstance(v, bool):
@@ -175,9 +302,16 @@ def format_call(call_fmt: str, args: dict) -> str:
     # 마우스 버튼 레이블 → 숫자
     if "button" in params:
         b = str(params["button"]) if params["button"] is not None else ""
-        if b.startswith("좌"): params["button"] = 1
-        elif b.startswith("우"): params["button"] = 2
-        elif b.startswith("중"): params["button"] = 3
+        label = b.split("(")[0].strip().lower()
+        label_map = {
+            "좌": 1,
+            "중": 2,
+            "우": 3,
+            "x1": 4,
+            "x2": 5,
+        }
+        if label in label_map:
+            params["button"] = label_map[label]
         else:
             try:
                 params["button"] = int(b)
@@ -187,6 +321,11 @@ def format_call(call_fmt: str, args: dict) -> str:
     for k in ("key", "k1", "k2"):
         if k in params and str(params[k]).strip() != "":
             params[k] = _quote_if_needed(params[k])
+    if has_k2:
+        k2 = str(params.get("k2", "")).strip()
+        params["k2_opt"] = f", {k2}" if k2_raw else ""
+    if "%(" not in call_fmt:
+        return call_fmt
     return call_fmt % params
 
 # ==============================
@@ -213,7 +352,7 @@ class ArgDialog(tk.Toplevel):
             default = spec.get("default")
             if preset and spec["name"] in preset:
                 default = preset[spec["name"]]
-            elif func_def["name"] == "MoveMouseTo":
+            elif func_def["name"] in ("MoveMouseTo", "MoveMouseToVirtual"):
                 if spec["name"] == "x": default = self.app.screen_w // 2
                 if spec["name"] == "y": default = self.app.screen_h // 2
 
@@ -235,7 +374,7 @@ class ArgDialog(tk.Toplevel):
             self.vars[spec["name"]] = var
 
         # MoveMouseTo 좌표 캡처 안내 + 단축키
-        if func_def["name"] == "MoveMouseTo":
+        if func_def["name"] in ("MoveMouseTo", "MoveMouseToVirtual"):
             hint = ttk.Label(frm, text="Ctrl+Space: 현재 마우스 좌표 반영")
             hint.grid(row=888, column=0, columnspan=2, sticky="w", pady=(6,0))
             self.bind("<Control-space>", self._capture_pointer_to_xy)
@@ -327,7 +466,7 @@ class ArgDialog(tk.Toplevel):
                 name = spec["name"]
                 var = self.vars[name]
                 raw = var.get() if not isinstance(var, tk.BooleanVar) else var.get()
-                if self.func_def["name"] == "MoveMouseTo" and spec.get("type") == "int":
+                if self.func_def["name"] in ("MoveMouseTo", "MoveMouseToVirtual") and spec.get("type") == "int":
                     maxv = self.app.screen_w - 1 if name == "x" else self.app.screen_h - 1
                     v = int(str(raw).strip())
                     if not (0 <= v <= maxv):
@@ -364,7 +503,9 @@ class ScriptBuilderApp(tk.Tk):
         self.var_show_legacy = tk.BooleanVar(value=True)   # True: 레거시 Lua 명칭/출력
         self.var_dark = tk.BooleanVar(value=False)
         self.var_trigger_event = tk.StringVar(value=EVENT_ORDER[0])  # 내부코드 보관
-        self.var_trigger_arg = tk.IntVar(value=1)
+        first_event_arg = EVENT_DEFS.get(EVENT_ORDER[0], {}).get("arg")
+        initial_arg = first_event_arg.get("default", first_event_arg.get("min", -1)) if first_event_arg else -1
+        self.var_trigger_arg = tk.IntVar(value=initial_arg)
         self.var_enable_primary = tk.BooleanVar(value=True)
         self.captured_xy = None  # Ctrl+Space로 캡처한 좌표
 
@@ -394,9 +535,17 @@ class ScriptBuilderApp(tk.Tk):
         ttk.Label(top, text="이벤트:").pack(side=tk.LEFT, padx=(16,4))
         self.cb_event = ttk.Combobox(top, state="readonly", width=28)
         self.cb_event.bind("<<ComboboxSelected>>", self.on_event_display_selected)
-        self.refresh_event_combobox()
-        ttk.Label(top, text="Arg:").pack(side=tk.LEFT, padx=(12,4))
-        ttk.Spinbox(top, from_=-1, to=16, textvariable=self.var_trigger_arg, width=8).pack(side=tk.LEFT)
+        self.cb_event.pack(side=tk.LEFT)
+
+        self.arg_frame = ttk.Frame(top)
+        self._arg_frame_pack = {"side": tk.LEFT, "padx": (12, 0)}
+        self.arg_frame.pack(**self._arg_frame_pack)
+        self.lbl_arg = ttk.Label(self.arg_frame, text="Arg:")
+        self.lbl_arg.pack(side=tk.LEFT, padx=(0, 4))
+        self.spin_arg = ttk.Spinbox(self.arg_frame, from_=-1, to=16, textvariable=self.var_trigger_arg, width=8)
+        self.spin_arg.pack(side=tk.LEFT)
+
+        self.refresh_event_combobox(reset_arg=True)
         ttk.Checkbutton(top, text="EnablePrimaryMouseButtonEvents(true)", variable=self.var_enable_primary).pack(side=tk.LEFT, padx=12)
 
         # 중앙 3분할
@@ -448,19 +597,12 @@ class ScriptBuilderApp(tk.Tk):
         self.populate_func_tree()
 
     def bind_shortcuts(self):
-        self.bind("<Delete>", lambda e: self.remove_selected_steps())
-        self.bind("<Control-Up>", lambda e: self.move_selected_steps(-1))
-        self.bind("<Control-Down>", lambda e: self.move_selected_steps(1))
-        self.bind("<Control-d>", lambda e: self.duplicate_selected_steps())
-        self.bind("<Return>", lambda e: self.add_selected_func())  # 기본 추가
-        self.bind("<Control-Shift-s>", lambda e: self.quick_add_sleep())
-        self.bind("<Control-space>", self.on_ctrl_space_capture)  # 전역 좌표 캡처
-        self.bind("<Delete>", lambda e: self.remove_selected_step())
-        self.bind("<Control-Up>", lambda e: self.move_step(-1))
-        self.bind("<Control-Down>", lambda e: self.move_step(1))
-        self.bind("<Control-d>", lambda e: self.duplicate_step())
-        self.bind("<Return>", lambda e: self.add_selected_func())  # 기본 추가
-        self.bind("<Control-Shift-s>", lambda e: self.quick_add_sleep())
+        self.bind("<Delete>", lambda e: (self.remove_selected_steps(), "break")[1])
+        self.bind("<Control-Up>", lambda e: (self.move_selected_steps(-1), "break")[1])
+        self.bind("<Control-Down>", lambda e: (self.move_selected_steps(1), "break")[1])
+        self.bind("<Control-d>", lambda e: (self.duplicate_selected_steps(), "break")[1])
+        self.bind("<Return>", lambda e: (self.add_selected_func(), "break")[1])  # 기본 추가
+        self.bind("<Control-Shift-s>", lambda e: (self.quick_add_sleep(), "break")[1])
         self.bind("<Control-space>", self.on_ctrl_space_capture)  # 전역 좌표 캡처
 
     # ---------- 테마 ----------
@@ -506,17 +648,45 @@ class ScriptBuilderApp(tk.Tk):
         self.refresh_event_combobox()
         self.update_preview()
 
-    def refresh_event_combobox(self):
+    def refresh_event_combobox(self, reset_arg: bool = False):
         # 내부 저장은 코드, 콤보박스 표시는 레거시/한글 연동
         if self.var_show_legacy.get():
-            disp_values = EVENT_ORDER[:]  # 코드 그대로 표시
             display_map = {c: c for c in EVENT_ORDER}
         else:
-            disp_values = [EVENT_LABELS[c] for c in EVENT_ORDER]
             display_map = {c: EVENT_LABELS[c] for c in EVENT_ORDER}
         self.cb_event["values"] = [display_map[c] for c in EVENT_ORDER]
         code = self.var_trigger_event.get()
+        if code not in EVENT_ORDER:
+            code = EVENT_ORDER[0]
+            self.var_trigger_event.set(code)
         self.cb_event.set(display_map.get(code, display_map[EVENT_ORDER[0]]))
+        self.update_trigger_controls(reset_value=reset_arg)
+
+    def update_trigger_controls(self, reset_value: bool = False):
+        code = self.var_trigger_event.get()
+        meta = EVENT_DEFS.get(code, {})
+        arg_meta = meta.get("arg")
+        if not arg_meta:
+            self.var_trigger_arg.set(-1)
+            if self.arg_frame.winfo_manager():
+                self.arg_frame.pack_forget()
+            return
+
+        if not self.arg_frame.winfo_manager():
+            self.arg_frame.pack(**self._arg_frame_pack)
+
+        allow_all = arg_meta.get("allow_all", False)
+        spin_from = -1 if allow_all else arg_meta.get("min", 0)
+        spin_to = arg_meta.get("max", 16)
+        increment = arg_meta.get("step", 1)
+        self.lbl_arg.config(text=f"{arg_meta.get('label', 'Arg')}:")
+        self.spin_arg.config(from_=spin_from, to=spin_to, increment=increment)
+
+        current = self.var_trigger_arg.get()
+        if reset_value or (current < spin_from and current != -1) or current > spin_to:
+            self.var_trigger_arg.set(arg_meta.get("default", spin_from if spin_from != -1 else arg_meta.get("min", 0)))
+        elif not allow_all and current == -1:
+            self.var_trigger_arg.set(arg_meta.get("default", arg_meta.get("min", 0)))
 
     def on_event_display_selected(self, _):
         display = self.cb_event.get()
@@ -524,6 +694,7 @@ class ScriptBuilderApp(tk.Tk):
             self.var_trigger_event.set(display)
         else:
             self.var_trigger_event.set(LABEL_TO_CODE.get(display, EVENT_ORDER[0]))
+        self.update_trigger_controls(reset_value=True)
         self.update_preview()
 
     # ---------- 함수 트리 ----------
@@ -545,6 +716,18 @@ class ScriptBuilderApp(tk.Tk):
                 self.tree.insert(nid, tk.END, text=self.display_name_for_func(f), values=(f["name"],))
             self.tree.item(nid, open=True)
 
+    def apply_filter(self):
+        prev = self.get_selected_catalog_func()
+        prev_name = prev["name"] if prev else None
+        self.populate_func_tree()
+        if prev_name:
+            for cat in self.tree.get_children():
+                for item in self.tree.get_children(cat):
+                    if self.tree.set(item, "name") == prev_name:
+                        self.tree.selection_set(item)
+                        self.tree.see(item)
+                        return
+
     # ---------- 상태/미리보기 ----------
     def set_status(self, text: str):
         try:
@@ -563,27 +746,38 @@ class ScriptBuilderApp(tk.Tk):
         lines = []
         lines.append("[설명 보기]")
         ev_code = self.var_trigger_event.get()
-        ev_label = EVENT_LABELS.get(ev_code, ev_code)
+        ev_meta = EVENT_DEFS.get(ev_code, {})
+        ev_label = ev_meta.get("label", ev_code)
         ar = self.var_trigger_arg.get()
-        # 이벤트 및 Arg, Primary 설명
         lines.append("실행 조건 설명:")
         lines.append(f"- 이벤트: '{ev_label}'")
-        if ar != -1:
-            lines.append(f"- 이벤트 인자(arg): {ar}")
-        # 상세 설명
-        lines.append("세부 안내:")
-        if ev_code.startswith("MOUSE_BUTTON"):
-            lines.append("- 마우스 관련 이벤트에서 arg는 버튼 번호입니다. 1=좌, 2=우, 3=중(휠)")
-        if ev_code.startswith("G_"):
-            lines.append("- G_PRESSED/G_RELEASED에서 arg는 누른 G키의 번호입니다.")
-        if self.var_enable_primary.get():
-            lines.append("- EnablePrimaryMouseButtonEvents(true): 좌클릭 이벤트도 스크립트로 전달됩니다.")
+        arg_meta = ev_meta.get("arg")
+        if arg_meta:
+            if ar == -1:
+                lines.append(f"- {arg_meta['label']}: 전체 (모든 값)")
+            else:
+                lines.append(f"- {arg_meta['label']}: {ar}")
+            if arg_meta.get("hint"):
+                lines.append(f"  · {arg_meta['hint']}")
         else:
-            lines.append("- EnablePrimaryMouseButtonEvents(false): 좌클릭 이벤트는 스크립트로 전달되지 않습니다.")
+            lines.append("- 추가 인수 없음")
+
+        lines.append("세부 안내:")
+        for detail in ev_meta.get("details", []):
+            lines.append(f"- {detail}")
+        if self.var_enable_primary.get():
+            lines.append("- 좌클릭 이벤트 전달 설정: EnablePrimaryMouseButtonEvents(true)")
+        else:
+            lines.append("- 좌클릭 이벤트 전달 설정: EnablePrimaryMouseButtonEvents(false)")
         lines.append("")
         # 요약 조건
-        if ev_code and ar != -1:
-            lines.append(f"실제 실행 조건: event='{ev_code}', arg={ar} 일 때")
+        cond = []
+        if ev_code:
+            cond.append(f"event='{ev_code}'")
+        if arg_meta and ar != -1:
+            cond.append(f"arg == {ar}")
+        if cond:
+            lines.append(f"실제 실행 조건: {' and '.join(cond)} 일 때")
         elif ev_code:
             lines.append(f"실제 실행 조건: event='{ev_code}' 일 때")
         else:
@@ -598,8 +792,17 @@ class ScriptBuilderApp(tk.Tk):
     def localized_step_desc(self, step: dict) -> str:
         name = step.get("name"); a = step.get("args", {})
         try:
+            def _button_value(val):
+                try:
+                    return int(val)
+                except Exception:
+                    label = str(val).split("(")[0].strip().lower()
+                    return {"좌": 1, "중": 2, "우": 3, "x1": 4, "x2": 5}.get(label, 1)
+
             if name == "MoveMouseTo":
                 return f"마우스를 ({int(a.get('x',0))}px, {int(a.get('y',0))}px) 위치로 이동"
+            if name == "MoveMouseToVirtual":
+                return f"가상 화면 ({int(a.get('x',0))}px, {int(a.get('y',0))}px) 위치로 이동"
             if name == "MoveMouseRelative":
                 return f"마우스를 상대 이동: ΔX={int(a.get('dx',0))}, ΔY={int(a.get('dy',0))}"
             if name == "PressAndReleaseKey":
@@ -611,16 +814,32 @@ class ScriptBuilderApp(tk.Tk):
                 return f"키 떼기: {a.get('key','""')}"
             if name == "MoveMouseWheel":
                 return f"마우스 휠 스크롤: {int(a.get('amount',0))}"
+            if name == "PressAndReleaseMouseButton":
+                return f"마우스 버튼 클릭: {_button_value(a.get('button',1))}"
             if name == "PressMouseButton":
-                return f"마우스 버튼 누름: {int(a.get('button',1))}"
+                return f"마우스 버튼 누름: {_button_value(a.get('button',1))}"
             if name == "ReleaseMouseButton":
-                return f"마우스 버튼 떼기: {int(a.get('button',1))}"
+                return f"마우스 버튼 떼기: {_button_value(a.get('button',1))}"
             if name == "EnablePrimaryMouseButtonEvents":
                 return "좌클릭 이벤트를 스크립트로 전달: " + ("예" if a.get('enable', True) else "아니오")
             if name == "OutputLogMessage":
                 return f"로그 출력: {a.get('text','""')}"
+            if name == "OutputDebugMessage":
+                return f"디버그 로그: {a.get('text','""')}"
+            if name == "ClearLog":
+                return "스크립트 로그 비우기"
             if name == "Sleep":
                 return f"대기: {int(a.get('ms',0))} ms"
+            if name == "PlayMacro":
+                return f"매크로 재생: {a.get('name','""')}"
+            if name == "PressMacro":
+                return f"매크로 누름: {a.get('name','""')}"
+            if name == "ReleaseMacro":
+                return f"매크로 뗌: {a.get('name','""')}"
+            if name == "AbortMacro":
+                return "실행 중 매크로 중지"
+            if name == "SetMKeyState":
+                return f"M 키 상태 설정: M{int(a.get('mkey',1))}"
         except Exception:
             pass
         return f"{name} (인수: {a})"
@@ -650,7 +869,7 @@ class ScriptBuilderApp(tk.Tk):
         args = {}
         for spec in fdef.get("args", []):
             name = spec["name"]; default = spec.get("default")
-            if fdef["name"] == "MoveMouseTo":
+            if fdef["name"] in ("MoveMouseTo", "MoveMouseToVirtual"):
                 if name == "x" and default == "__CENTER_X__":
                     args[name] = (self.captured_xy[0] if self.captured_xy else self.screen_w // 2)
                     continue
@@ -821,8 +1040,14 @@ class ScriptBuilderApp(tk.Tk):
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             trig = data.get("trigger", {})
-            self.var_trigger_event.set(trig.get("event", EVENT_ORDER[0]))
-            self.var_trigger_arg.set(trig.get("arg", 1))
+            code = trig.get("event", EVENT_ORDER[0])
+            self.var_trigger_event.set(code)
+            if "arg" in trig:
+                arg_value = trig.get("arg")
+            else:
+                arg_meta = EVENT_DEFS.get(code, {}).get("arg")
+                arg_value = arg_meta.get("default", arg_meta.get("min", -1)) if arg_meta else -1
+            self.var_trigger_arg.set(arg_value)
             self.var_enable_primary.set(bool(trig.get("enable_primary", True)))
             self.steps = data.get("steps", [])
             self.refresh_event_combobox(); self.refresh_steps()
@@ -882,6 +1107,11 @@ class ScriptBuilderApp(tk.Tk):
                 x_abs = round(max(0, min(self.screen_w - 1, x_px)) * 65535 / max(1, self.screen_w - 1))
                 y_abs = round(max(0, min(self.screen_h - 1, y_px)) * 65535 / max(1, self.screen_h - 1))
                 lines.append(indent + f"MoveMouseTo({x_abs}, {y_abs})  -- ({x_px}px, {y_px}px)")
+            elif name == "MoveMouseToVirtual":
+                x_px = int(args.get("x", 0)); y_px = int(args.get("y", 0))
+                x_abs = round(max(0, min(self.screen_w - 1, x_px)) * 65535 / max(1, self.screen_w - 1))
+                y_abs = round(max(0, min(self.screen_h - 1, y_px)) * 65535 / max(1, self.screen_h - 1))
+                lines.append(indent + f"MoveMouseToVirtual({x_abs}, {y_abs})  -- ({x_px}px, {y_px}px)")
             else:
                 call = format_call(fdef["call"], args)
                 lines.append(indent + call)
@@ -899,6 +1129,7 @@ class ScriptBuilderApp(tk.Tk):
             self.set_status(f"좌표 캡처됨: {x}, {y} — 다음 MoveMouseTo 추가 시 반영")
         except Exception:
             pass
+        return "break"
 
     def quick_add_sleep(self):
         step = {"name": "Sleep", "args": {"ms": 10}}
