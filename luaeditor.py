@@ -299,35 +299,6 @@ class ArgDialog(tk.Toplevel):
                 return ks
         return ks.upper()
 
-        if not getattr(self, "_key_capture", False):
-            return
-        key = self._normalize_keysym(event.keysym)
-        if key:
-            # 대상 변수를 찾아 채우기
-            if "key" in self.vars:
-                self.vars["key"].set(key)
-            if "k1" in self.vars and not self.vars["k1"].get():
-                self.vars["k1"].set(key)
-            elif "k2" in self.vars and (self.vars.get("k1") and self.vars["k1"].get()):
-                self.vars["k2"].set(key)
-            if hasattr(self, 'lbl_kcap'):
-                self.lbl_kcap.config(text=f"감지: {key}")
-            self._key_capture = False
-
-    def _normalize_keysym(self, ks: str) -> str:
-        if not ks: return ""
-        m = {
-            "space": "SPACE", "Return": "ENTER", "Escape": "ESC", "Tab": "TAB",
-            "Shift_L": "SHIFT", "Shift_R": "SHIFT", "Control_L": "CTRL", "Control_R": "CTRL",
-            "Alt_L": "ALT", "Alt_R": "ALT",
-            "Up": "UP", "Down": "DOWN", "Left": "LEFT", "Right": "RIGHT",
-        }
-        if ks in m: return m[ks]
-        if len(ks) == 1:
-            if ks.isalpha(): return ks.upper()
-            if ks.isdigit(): return ks
-        return ks.upper()
-
     def center_to_parent(self):
         try:
             self.update_idletasks()
@@ -622,7 +593,7 @@ class ScriptBuilderApp(tk.Tk):
             lines.append("(스텝이 없습니다)")
         for i, st in enumerate(self.steps, 1):
             lines.append(f"{i}. {self.localized_step_desc(st)}")
-        return "".join(lines) + ""
+        return "\n".join(lines) + "\n"
 
     def localized_step_desc(self, step: dict) -> str:
         name = step.get("name"); a = step.get("args", {})
@@ -789,12 +760,6 @@ class ScriptBuilderApp(tk.Tk):
         for i in new_sel:
             self.lb_steps.selection_set(i)
         self.lb_steps.see(new_sel[-1])
-        idx = self.lb_steps.curselection()
-        if not idx: return
-        pos = idx[0]
-        self.steps.pop(pos)
-        self.refresh_steps()
-        if self.steps: self.lb_steps.selection_set(min(pos, len(self.steps)-1))
 
     def duplicate_step(self):
         idx = self.lb_steps.curselection()
