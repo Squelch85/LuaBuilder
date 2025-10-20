@@ -15,9 +15,11 @@ Python 3.9+ / 외부 의존성 없음
 """
 
 from __future__ import annotations
+import copy
 import json
 import sys
 import tkinter as tk
+from typing import Callable
 from tkinter import ttk, messagebox, filedialog
 
 # ==============================
@@ -250,6 +252,14 @@ FUNCTION_CATALOG = [
      "call": "SetMKeyState(%(mkey)d)",
      "args": [{"name": "mkey", "label": "M키 상태", "type": "int", "default": 1, "min": 1, "max": 3}],
      "desc": "M키 모드 전환"},
+
+    {"name": "__CALL_USER_FUNCTION__", "cat": "Custom", "icon": "🧩",
+     "call": "%(func)s(%(arg_expr)s)",
+     "args": [
+         {"name": "func", "label": "로컬 함수", "type": "choice", "choices": "__USER_FUNCS__", "default": ""},
+         {"name": "arg_expr", "label": "인수 표현식", "type": "raw", "default": ""},
+     ],
+     "desc": "사용자 정의 함수 호출"},
 ]
 CATALOG_BY_NAME = {f["name"]: f for f in FUNCTION_CATALOG}
 
@@ -282,6 +292,8 @@ def validate_value(spec: dict, value_str):
         if s in ("true","1","on","yes"): return True
         if s in ("false","0","off","no"): return False
         raise ValueError("불리언(true/false) 값을 입력하세요.")
+    if t == "raw":
+        return str(value_str)
     if t == "choice":
         choices = spec.get("choices") or []
         if value_str not in choices:
@@ -332,7 +344,8 @@ def format_call(call_fmt: str, args: dict) -> str:
 # 인수 입력 다이얼로그
 # ==============================
 class ArgDialog(tk.Toplevel):
-    def __init__(self, app, func_def, preset=None):
+    def __init__(self, app, func_def, preset=None, schedule=None, settings=None,
+                 allow_schedule: bool = False, allow_settings: bool = False):
         super().__init__(app)
         self.title(f"인수 입력 — {func_def['name']}")
         self.resizable(False, False)
@@ -340,9 +353,14 @@ class ArgDialog(tk.Toplevel):
         self.app = app
         self.result = None
         self._key_capture_target = None  # "k1"/"k2"/"key"
+        self.allow_schedule = allow_schedule
+        self.allow_settings = allow_settings
+        self.schedule_vars: dict[str, tk.Variable] = {}
+        self.settings_text: tk.Text | None = None
 
         frm = ttk.Frame(self, padding=12)
         frm.grid(row=0, column=0, sticky="nsew")
+        frm.columnconfigure(1, weight=1)
 
         self.vars = {}
         for i, spec in enumerate(func_def.get("args", [])):
@@ -372,6 +390,53 @@ class ArgDialog(tk.Toplevel):
                 var = tk.StringVar(value=str(default))
                 ttk.Entry(frm, textvariable=var, width=34).grid(row=i, column=1, sticky="w")
             self.vars[spec["name"]] = var
+
+        schedule_row = len(func_def.get("args", [])) + 1
+        if allow_schedule:
+            sched = schedule.copy() if schedule else self.app.get_default_schedule()
+            sfrm = ttk.LabelFrame(frm, text="타이밍/스케줄")
+            sfrm.grid(row=schedule_row, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
+            self.schedule_vars = {
+                "start_delay": tk.StringVar(value=str(sched.get("start_delay", 0))),
+                "interval": tk.StringVar(value=str(sched.get("interval", 0))),
+                "repeat": tk.StringVar(value=str(sched.get("repeat", 1))),
+                "cooldown": tk.StringVar(value=str(sched.get("cooldown", 0))),
+                "loop_var": tk.StringVar(value=str(sched.get("loop_var", "i"))),
+            }
+
+            ttk.Label(sfrm, text="시작 지연(ms)").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+            ttk.Spinbox(sfrm, from_=0, to=600000, increment=10,
+                        textvariable=self.schedule_vars["start_delay"], width=10).grid(row=0, column=1, padx=4, pady=2)
+
+            ttk.Label(sfrm, text="반복 간격(ms)").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+            ttk.Spinbox(sfrm, from_=0, to=600000, increment=10,
+                        textvariable=self.schedule_vars["interval"], width=10).grid(row=1, column=1, padx=4, pady=2)
+
+            ttk.Label(sfrm, text="반복 횟수").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+            ttk.Spinbox(sfrm, from_=1, to=9999, increment=1,
+                        textvariable=self.schedule_vars["repeat"], width=10).grid(row=2, column=1, padx=4, pady=2)
+
+            ttk.Label(sfrm, text="종료 후 대기(ms)").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+            ttk.Spinbox(sfrm, from_=0, to=600000, increment=10,
+                        textvariable=self.schedule_vars["cooldown"], width=10).grid(row=3, column=1, padx=4, pady=2)
+
+            ttk.Label(sfrm, text="루프 변수명").grid(row=4, column=0, sticky="w", padx=4, pady=2)
+            ttk.Entry(sfrm, textvariable=self.schedule_vars["loop_var"], width=12).grid(row=4, column=1, padx=4, pady=2, sticky="w")
+
+        settings_row = schedule_row + (1 if allow_schedule else 0)
+        if allow_settings:
+            setfrm = ttk.LabelFrame(frm, text="지역 설정(JSON)")
+            setfrm.grid(row=settings_row, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+            self.settings_text = tk.Text(setfrm, width=46, height=5)
+            self.settings_text.grid(row=0, column=0, sticky="ew")
+            if settings:
+                try:
+                    self.settings_text.insert("1.0", json.dumps(settings, ensure_ascii=False, indent=2))
+                except Exception:
+                    self.settings_text.insert("1.0", str(settings))
+            else:
+                self.settings_text.insert("1.0", "{}")
 
         # MoveMouseTo 좌표 캡처 안내 + 단축키
         if func_def["name"] in ("MoveMouseTo", "MoveMouseToVirtual"):
@@ -474,7 +539,35 @@ class ArgDialog(tk.Toplevel):
                     vals[name] = v
                 else:
                     vals[name] = validate_value(spec, raw)
-            self.result = vals
+            schedule_result = None
+            if self.allow_schedule:
+                try:
+                    schedule_result = {
+                        "start_delay": max(0, int(str(self.schedule_vars["start_delay"].get()).strip() or 0)),
+                        "interval": max(0, int(str(self.schedule_vars["interval"].get()).strip() or 0)),
+                        "repeat": max(1, int(str(self.schedule_vars["repeat"].get()).strip() or 1)),
+                        "cooldown": max(0, int(str(self.schedule_vars["cooldown"].get()).strip() or 0)),
+                        "loop_var": (str(self.schedule_vars["loop_var"].get()).strip() or "i"),
+                    }
+                except ValueError:
+                    raise ValueError("스케줄 값은 정수여야 합니다.")
+
+            settings_result = None
+            if self.allow_settings and self.settings_text is not None:
+                raw_text = self.settings_text.get("1.0", tk.END).strip()
+                settings_result = {}
+                if raw_text:
+                    try:
+                        settings_result = json.loads(raw_text)
+                        if not isinstance(settings_result, dict):
+                            raise ValueError("지역 설정은 JSON 객체 형태여야 합니다.")
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(f"지역 설정 JSON 구문 오류: {exc}")
+            self.result = {
+                "args": vals,
+                "schedule": schedule_result,
+                "settings": settings_result,
+            }
             self.destroy()
         except Exception as e:
             messagebox.showerror("입력 오류", str(e), parent=self)
@@ -483,6 +576,402 @@ class ArgDialog(tk.Toplevel):
         self.result = None
         self.destroy()
 
+
+class BlockDialog(tk.Toplevel):
+    BLOCK_TYPES = [
+        ("repeat", "반복 루프"),
+        ("while", "While 조건"),
+        ("if", "조건 분기"),
+    ]
+
+    def __init__(self, app, block=None):
+        super().__init__(app)
+        self.app = app
+        self.block = block or {}
+        self.result = None
+
+        self.title("블록 설정")
+        self.resizable(False, False)
+
+        meta = self.block.get("meta", {}) or {}
+        schedule = app.normalize_schedule(self.block.get("schedule")) if block else app.get_default_schedule()
+        settings = self.block.get("settings") or {}
+        self.original_block_type = self.block.get("block_type")
+
+        frm = ttk.Frame(self, padding=12)
+        frm.grid(row=0, column=0, sticky="nsew")
+
+        label_map = {code: label for code, label in self.BLOCK_TYPES}
+        self.type_map = {label: code for code, label in self.BLOCK_TYPES}
+        initial_type = self.block.get("block_type", "repeat")
+        initial_label = label_map.get(initial_type, label_map["repeat"])
+        ttk.Label(frm, text="블록 종류:").grid(row=0, column=0, sticky="w", pady=4)
+        self.var_type = tk.StringVar(value=initial_label)
+        cb = ttk.Combobox(frm, textvariable=self.var_type, values=list(label_map.values()), state="readonly", width=24)
+        cb.grid(row=0, column=1, sticky="w")
+        cb.bind("<<ComboboxSelected>>", lambda *_: self.render_meta_fields())
+
+        self.meta_frame = ttk.LabelFrame(frm, text="블록 속성")
+        self.meta_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8,0))
+        self.meta_vars: dict[str, tk.StringVar] = {}
+        self.meta_data = meta
+        self.render_meta_fields()
+
+        self.schedule_vars = {
+            "start_delay": tk.StringVar(value=str(schedule.get("start_delay", 0))),
+            "interval": tk.StringVar(value=str(schedule.get("interval", 0))),
+            "repeat": tk.StringVar(value=str(schedule.get("repeat", 1))),
+            "cooldown": tk.StringVar(value=str(schedule.get("cooldown", 0))),
+            "loop_var": tk.StringVar(value=str(schedule.get("loop_var", "i"))),
+        }
+        sfrm = ttk.LabelFrame(frm, text="타이밍/스케줄")
+        sfrm.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10,0))
+        ttk.Label(sfrm, text="시작 지연(ms)").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        ttk.Spinbox(sfrm, from_=0, to=600000, increment=10, textvariable=self.schedule_vars["start_delay"], width=10).grid(row=0, column=1, padx=4, pady=2)
+        ttk.Label(sfrm, text="반복 간격(ms)").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Spinbox(sfrm, from_=0, to=600000, increment=10, textvariable=self.schedule_vars["interval"], width=10).grid(row=1, column=1, padx=4, pady=2)
+        ttk.Label(sfrm, text="반복 횟수").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+        ttk.Spinbox(sfrm, from_=1, to=9999, increment=1, textvariable=self.schedule_vars["repeat"], width=10).grid(row=2, column=1, padx=4, pady=2)
+        ttk.Label(sfrm, text="종료 후 대기(ms)").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+        ttk.Spinbox(sfrm, from_=0, to=600000, increment=10, textvariable=self.schedule_vars["cooldown"], width=10).grid(row=3, column=1, padx=4, pady=2)
+        ttk.Label(sfrm, text="루프 변수명").grid(row=4, column=0, sticky="w", padx=4, pady=2)
+        ttk.Entry(sfrm, textvariable=self.schedule_vars["loop_var"], width=12).grid(row=4, column=1, padx=4, pady=2, sticky="w")
+
+        setfrm = ttk.LabelFrame(frm, text="지역 설정(JSON)")
+        setfrm.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10,0))
+        self.txt_settings = tk.Text(setfrm, width=46, height=5)
+        self.txt_settings.grid(row=0, column=0, sticky="ew")
+        if settings:
+            try:
+                self.txt_settings.insert("1.0", json.dumps(settings, ensure_ascii=False, indent=2))
+            except Exception:
+                self.txt_settings.insert("1.0", str(settings))
+        else:
+            self.txt_settings.insert("1.0", "{}")
+
+        btnfrm = ttk.Frame(frm)
+        btnfrm.grid(row=4, column=0, columnspan=2, pady=(12,0))
+        ttk.Button(btnfrm, text="확인", command=self.on_ok).grid(row=0, column=0, padx=4)
+        ttk.Button(btnfrm, text="취소", command=self.on_cancel).grid(row=0, column=1, padx=4)
+
+        self.bind("<Return>", lambda e: self.on_ok())
+        self.bind("<Escape>", lambda e: self.on_cancel())
+
+        self.transient(app)
+        self.grab_set()
+        self.update_idletasks()
+        self.center_to_parent()
+        self.focus_set()
+
+    def center_to_parent(self):
+        try:
+            self.update_idletasks()
+            px = self.master.winfo_rootx(); py = self.master.winfo_rooty()
+            pw = self.master.winfo_width(); ph = self.master.winfo_height()
+            w = self.winfo_width(); h = self.winfo_height()
+            x = px + (pw - w) // 2
+            y = py + (ph - h) // 2
+            self.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+    def current_block_type(self) -> str:
+        label = self.var_type.get()
+        return self.type_map.get(label, "repeat")
+
+    def render_meta_fields(self):
+        for child in self.meta_frame.winfo_children():
+            child.destroy()
+        btype = self.current_block_type()
+        meta = self.meta_data if self.original_block_type == btype else {}
+        if btype == "repeat":
+            self.meta_vars["count"] = tk.StringVar(value=str(meta.get("count", 1)))
+            self.meta_vars["var_name"] = tk.StringVar(value=meta.get("var_name") or meta.get("loop_var") or self.app.get_default_schedule().get("loop_var", "i"))
+            self.meta_vars["label"] = tk.StringVar(value=meta.get("label", ""))
+            ttk.Label(self.meta_frame, text="반복 횟수").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+            ttk.Spinbox(self.meta_frame, from_=1, to=9999, increment=1, textvariable=self.meta_vars["count"], width=10).grid(row=0, column=1, sticky="w", padx=4, pady=2)
+            ttk.Label(self.meta_frame, text="루프 변수명").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+            ttk.Entry(self.meta_frame, textvariable=self.meta_vars["var_name"], width=16).grid(row=1, column=1, sticky="w", padx=4, pady=2)
+            ttk.Label(self.meta_frame, text="라벨/설명").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+            ttk.Entry(self.meta_frame, textvariable=self.meta_vars["label"], width=32).grid(row=2, column=1, sticky="w", padx=4, pady=2)
+        elif btype in ("while", "if"):
+            self.meta_vars["condition"] = tk.StringVar(value=meta.get("condition", "true"))
+            self.meta_vars["label"] = tk.StringVar(value=meta.get("label", ""))
+            ttk.Label(self.meta_frame, text="조건 표현식").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+            ttk.Entry(self.meta_frame, textvariable=self.meta_vars["condition"], width=34).grid(row=0, column=1, sticky="w", padx=4, pady=2)
+            ttk.Label(self.meta_frame, text="라벨/설명").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+            ttk.Entry(self.meta_frame, textvariable=self.meta_vars["label"], width=32).grid(row=1, column=1, sticky="w", padx=4, pady=2)
+        else:
+            ttk.Label(self.meta_frame, text="이 블록 유형은 추가 설정이 없습니다.").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+
+    def on_ok(self):
+        try:
+            block_type = self.current_block_type()
+            meta: dict[str, object] = {}
+            if block_type == "repeat":
+                count = int(str(self.meta_vars["count"].get()).strip() or 1)
+                if count < 1:
+                    raise ValueError("반복 횟수는 1 이상이어야 합니다.")
+                meta["count"] = count
+                var_name = str(self.meta_vars["var_name"].get()).strip() or self.schedule_vars["loop_var"].get() or "i"
+                meta["var_name"] = var_name
+                label = str(self.meta_vars["label"].get()).strip()
+                if label:
+                    meta["label"] = label
+            elif block_type in ("while", "if"):
+                condition = str(self.meta_vars["condition"].get()).strip() or "true"
+                meta["condition"] = condition
+                label = str(self.meta_vars["label"].get()).strip()
+                if label:
+                    meta["label"] = label
+
+            schedule_result = {
+                "start_delay": max(0, int(str(self.schedule_vars["start_delay"].get()).strip() or 0)),
+                "interval": max(0, int(str(self.schedule_vars["interval"].get()).strip() or 0)),
+                "repeat": max(1, int(str(self.schedule_vars["repeat"].get()).strip() or 1)),
+                "cooldown": max(0, int(str(self.schedule_vars["cooldown"].get()).strip() or 0)),
+                "loop_var": str(self.schedule_vars["loop_var"].get()).strip() or "i",
+            }
+
+            settings_text = self.txt_settings.get("1.0", tk.END).strip()
+            settings_result = {}
+            if settings_text:
+                try:
+                    settings_result = json.loads(settings_text)
+                    if not isinstance(settings_result, dict):
+                        raise ValueError("지역 설정은 JSON 객체 형태여야 합니다.")
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"지역 설정 JSON 구문 오류: {exc}") from exc
+
+            self.result = {
+                "block_type": block_type,
+                "meta": meta,
+                "schedule": schedule_result,
+                "settings": settings_result,
+            }
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("입력 오류", str(e), parent=self)
+
+    def on_cancel(self):
+        self.result = None
+        self.destroy()
+
+
+class FunctionDialog(tk.Toplevel):
+    def __init__(self, app, func=None):
+        super().__init__(app)
+        self.result = None
+        self.title("로컬 함수 설정")
+        self.resizable(False, False)
+
+        frm = ttk.Frame(self, padding=12)
+        frm.grid(row=0, column=0, sticky="nsew")
+
+        self.var_name = tk.StringVar(value=(func or {}).get("name", ""))
+        ttk.Label(frm, text="함수 이름:").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(frm, textvariable=self.var_name, width=30).grid(row=0, column=1, sticky="w")
+
+        params = ", ".join((func or {}).get("params", []))
+        self.var_params = tk.StringVar(value=params)
+        ttk.Label(frm, text="매개변수(콤마 구분):").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(frm, textvariable=self.var_params, width=34).grid(row=1, column=1, sticky="w")
+
+        ttk.Label(frm, text="설명").grid(row=2, column=0, sticky="nw", pady=4)
+        self.txt_desc = tk.Text(frm, width=40, height=4)
+        self.txt_desc.grid(row=2, column=1, sticky="ew")
+        desc = (func or {}).get("description", "")
+        if desc:
+            self.txt_desc.insert("1.0", desc)
+
+        ttk.Label(frm, text="설정(JSON)").grid(row=3, column=0, sticky="nw", pady=4)
+        self.txt_settings = tk.Text(frm, width=40, height=5)
+        self.txt_settings.grid(row=3, column=1, sticky="ew")
+        settings = (func or {}).get("settings", {})
+        if settings:
+            try:
+                self.txt_settings.insert("1.0", json.dumps(settings, ensure_ascii=False, indent=2))
+            except Exception:
+                self.txt_settings.insert("1.0", str(settings))
+        else:
+            self.txt_settings.insert("1.0", "{}")
+
+        btnfrm = ttk.Frame(frm)
+        btnfrm.grid(row=4, column=0, columnspan=2, pady=(12,0))
+        ttk.Button(btnfrm, text="확인", command=self.on_ok).grid(row=0, column=0, padx=4)
+        ttk.Button(btnfrm, text="취소", command=self.on_cancel).grid(row=0, column=1, padx=4)
+
+        self.bind("<Return>", lambda e: self.on_ok())
+        self.bind("<Escape>", lambda e: self.on_cancel())
+
+        self.transient(app)
+        self.grab_set()
+        self.update_idletasks()
+        self.center_to_parent()
+        self.focus_set()
+
+    def center_to_parent(self):
+        try:
+            self.update_idletasks()
+            px = self.master.winfo_rootx(); py = self.master.winfo_rooty()
+            pw = self.master.winfo_width(); ph = self.master.winfo_height()
+            w = self.winfo_width(); h = self.winfo_height()
+            x = px + (pw - w) // 2
+            y = py + (ph - h) // 2
+            self.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+    def on_ok(self):
+        try:
+            name = self.var_name.get().strip()
+            if not name:
+                raise ValueError("함수 이름을 입력하세요.")
+            if not (name[0].isalpha() or name[0] == "_") or not all(c.isalnum() or c == "_" for c in name):
+                raise ValueError("함수 이름은 영문/숫자/밑줄만 사용할 수 있으며 숫자로 시작할 수 없습니다.")
+            params = [p.strip() for p in self.var_params.get().split(",") if p.strip()]
+            desc = self.txt_desc.get("1.0", tk.END).strip()
+            settings_text = self.txt_settings.get("1.0", tk.END).strip()
+            settings = {}
+            if settings_text:
+                try:
+                    settings = json.loads(settings_text)
+                    if not isinstance(settings, dict):
+                        raise ValueError("설정은 JSON 객체 형태여야 합니다.")
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"설정 JSON 구문 오류: {exc}") from exc
+            self.result = {
+                "name": name,
+                "params": params,
+                "description": desc,
+                "settings": settings,
+            }
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("입력 오류", str(e), parent=self)
+
+    def on_cancel(self):
+        self.result = None
+        self.destroy()
+
+
+class GlobalSettingsDialog(tk.Toplevel):
+    def __init__(self, app, settings):
+        super().__init__(app)
+        self.app = app
+        self.result = None
+        self.title("전역 설정")
+        self.resizable(False, False)
+
+        frm = ttk.Frame(self, padding=12)
+        frm.grid(row=0, column=0, sticky="nsew")
+
+        base_schedule = app.normalize_schedule((settings or {}).get("default_schedule"))
+        self.schedule_vars = {
+            "start_delay": tk.StringVar(value=str(base_schedule.get("start_delay", 0))),
+            "interval": tk.StringVar(value=str(base_schedule.get("interval", 0))),
+            "repeat": tk.StringVar(value=str(base_schedule.get("repeat", 1))),
+            "cooldown": tk.StringVar(value=str(base_schedule.get("cooldown", 0))),
+            "loop_var": tk.StringVar(value=str(base_schedule.get("loop_var", "i"))),
+        }
+        sfrm = ttk.LabelFrame(frm, text="신규 스텝 기본 스케줄")
+        sfrm.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(sfrm, text="시작 지연(ms)").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        ttk.Spinbox(sfrm, from_=0, to=600000, increment=10, textvariable=self.schedule_vars["start_delay"], width=10).grid(row=0, column=1, padx=4, pady=2)
+        ttk.Label(sfrm, text="반복 간격(ms)").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Spinbox(sfrm, from_=0, to=600000, increment=10, textvariable=self.schedule_vars["interval"], width=10).grid(row=1, column=1, padx=4, pady=2)
+        ttk.Label(sfrm, text="반복 횟수").grid(row=2, column=0, sticky="w", padx=4, pady=2)
+        ttk.Spinbox(sfrm, from_=1, to=9999, increment=1, textvariable=self.schedule_vars["repeat"], width=10).grid(row=2, column=1, padx=4, pady=2)
+        ttk.Label(sfrm, text="종료 후 대기(ms)").grid(row=3, column=0, sticky="w", padx=4, pady=2)
+        ttk.Spinbox(sfrm, from_=0, to=600000, increment=10, textvariable=self.schedule_vars["cooldown"], width=10).grid(row=3, column=1, padx=4, pady=2)
+        ttk.Label(sfrm, text="루프 변수명").grid(row=4, column=0, sticky="w", padx=4, pady=2)
+        ttk.Entry(sfrm, textvariable=self.schedule_vars["loop_var"], width=12).grid(row=4, column=1, sticky="w", padx=4, pady=2)
+
+        ttk.Label(frm, text="Prelude Lua 코드").grid(row=1, column=0, sticky="nw", pady=(10,2))
+        self.txt_prelude = tk.Text(frm, width=48, height=4)
+        self.txt_prelude.grid(row=1, column=1, sticky="ew", pady=(10,2))
+        prelude = (settings or {}).get("prelude", "")
+        if prelude:
+            self.txt_prelude.insert("1.0", prelude)
+
+        ttk.Label(frm, text="전역 노트").grid(row=2, column=0, sticky="nw", pady=2)
+        self.txt_notes = tk.Text(frm, width=48, height=4)
+        self.txt_notes.grid(row=2, column=1, sticky="ew")
+        notes = (settings or {}).get("notes", "")
+        if notes:
+            self.txt_notes.insert("1.0", notes)
+
+        ttk.Label(frm, text="기타 설정(JSON)").grid(row=3, column=0, sticky="nw", pady=2)
+        self.txt_custom = tk.Text(frm, width=48, height=4)
+        self.txt_custom.grid(row=3, column=1, sticky="ew")
+        custom = (settings or {}).get("custom", {})
+        if custom:
+            try:
+                self.txt_custom.insert("1.0", json.dumps(custom, ensure_ascii=False, indent=2))
+            except Exception:
+                self.txt_custom.insert("1.0", str(custom))
+        else:
+            self.txt_custom.insert("1.0", "{}")
+
+        btnfrm = ttk.Frame(frm)
+        btnfrm.grid(row=4, column=0, columnspan=2, pady=(12,0))
+        ttk.Button(btnfrm, text="확인", command=self.on_ok).grid(row=0, column=0, padx=4)
+        ttk.Button(btnfrm, text="취소", command=self.on_cancel).grid(row=0, column=1, padx=4)
+
+        self.bind("<Return>", lambda e: self.on_ok())
+        self.bind("<Escape>", lambda e: self.on_cancel())
+
+        self.transient(app)
+        self.grab_set()
+        self.update_idletasks()
+        self.center_to_parent()
+        self.focus_set()
+
+    def center_to_parent(self):
+        try:
+            self.update_idletasks()
+            px = self.master.winfo_rootx(); py = self.master.winfo_rooty()
+            pw = self.master.winfo_width(); ph = self.master.winfo_height()
+            w = self.winfo_width(); h = self.winfo_height()
+            x = px + (pw - w) // 2
+            y = py + (ph - h) // 2
+            self.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+    def on_ok(self):
+        try:
+            schedule = {
+                "start_delay": max(0, int(str(self.schedule_vars["start_delay"].get()).strip() or 0)),
+                "interval": max(0, int(str(self.schedule_vars["interval"].get()).strip() or 0)),
+                "repeat": max(1, int(str(self.schedule_vars["repeat"].get()).strip() or 1)),
+                "cooldown": max(0, int(str(self.schedule_vars["cooldown"].get()).strip() or 0)),
+                "loop_var": str(self.schedule_vars["loop_var"].get()).strip() or "i",
+            }
+            prelude = self.txt_prelude.get("1.0", tk.END).rstrip()
+            notes = self.txt_notes.get("1.0", tk.END).rstrip()
+            custom_text = self.txt_custom.get("1.0", tk.END).strip()
+            custom = {}
+            if custom_text:
+                try:
+                    custom = json.loads(custom_text)
+                    if not isinstance(custom, dict):
+                        raise ValueError("기타 설정은 JSON 객체 형태여야 합니다.")
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"기타 설정 JSON 구문 오류: {exc}") from exc
+            self.result = {
+                "default_schedule": schedule,
+                "prelude": prelude,
+                "notes": notes,
+                "custom": custom,
+            }
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("입력 오류", str(e), parent=self)
+
+    def on_cancel(self):
+        self.result = None
+        self.destroy()
 # ==============================
 # 메인 앱
 # ==============================
@@ -496,7 +985,23 @@ class ScriptBuilderApp(tk.Tk):
         self.screen_w = self.winfo_screenwidth()
         self.screen_h = self.winfo_screenheight()
 
-        self.steps: list[dict] = []  # [{name, args}]
+        self.global_settings: dict = {
+            "default_schedule": {
+                "start_delay": 0,
+                "interval": 0,
+                "repeat": 1,
+                "cooldown": 0,
+                "loop_var": "i",
+            },
+            "prelude": "",
+            "notes": "",
+            "custom": {},
+        }
+        self.root_block = self._make_root_block()
+        self.functions: list[dict] = []
+        self.flat_steps: list[dict] = []
+        self.var_scope = tk.StringVar()
+
         self.status = tk.StringVar(value="준비")
 
         # 토글/상태
@@ -512,7 +1017,159 @@ class ScriptBuilderApp(tk.Tk):
         self.create_widgets()
         self.apply_theme()
         self.bind_shortcuts()
+        self.update_scope_options()
+        self.refresh_steps()
         self.update_preview()
+
+    # ---------- 데이터 헬퍼 ----------
+    def _make_root_block(self) -> dict:
+        return self.make_block_step("root")
+
+    def sanitize_schedule_dict(self, schedule: dict | None) -> dict:
+        schedule = schedule or {}
+        return {
+            "start_delay": max(0, int(schedule.get("start_delay", 0) or 0)),
+            "interval": max(0, int(schedule.get("interval", 0) or 0)),
+            "repeat": max(1, int(schedule.get("repeat", 1) or 1)),
+            "cooldown": max(0, int(schedule.get("cooldown", 0) or 0)),
+            "loop_var": str(schedule.get("loop_var", "i") or "i"),
+        }
+
+    def get_default_schedule(self) -> dict:
+        base = self.global_settings.get("default_schedule", {}) if hasattr(self, "global_settings") else {}
+        return self.sanitize_schedule_dict(base)
+
+    def normalize_schedule(self, schedule: dict | None) -> dict:
+        base = self.get_default_schedule()
+        if not schedule:
+            return dict(base)
+        sanitized = self.sanitize_schedule_dict(schedule)
+        normalized = dict(base)
+        normalized.update(sanitized)
+        return normalized
+
+    def get_user_function_names(self) -> list[str]:
+        return [fn.get("name") for fn in self.functions if fn.get("name")]
+
+    def resolve_dynamic_choices(self, func_def: dict):
+        for spec in func_def.get("args", []):
+            choices = spec.get("choices")
+            if isinstance(choices, str) and choices == "__USER_FUNCS__":
+                names = [name for name in self.get_user_function_names() if name]
+                spec["choices"] = [""] + names if names else [""]
+                # 로컬 함수가 존재하면 기본값을 첫 항목으로 자동 지정해 빈 호출 생성 방지
+                if names and not spec.get("default"):
+                    spec["default"] = names[0]
+
+    def make_action_step(self, name: str, args: dict | None = None,
+                         schedule: dict | None = None, settings: dict | None = None) -> dict:
+        return {
+            "type": "action",
+            "name": name,
+            "args": args or {},
+            "schedule": self.normalize_schedule(schedule),
+            "settings": settings or {},
+        }
+
+    def make_block_step(self, block_type: str, meta: dict | None = None,
+                        schedule: dict | None = None, settings: dict | None = None,
+                        children: list | None = None) -> dict:
+        return {
+            "type": "block",
+            "block_type": block_type,
+            "meta": meta or {},
+            "children": children or [],
+            "schedule": self.normalize_schedule(schedule),
+            "settings": settings or {},
+        }
+
+    def migrate_step(self, data: dict) -> dict:
+        if not isinstance(data, dict):
+            return data
+        st_type = data.get("type")
+        if st_type == "block":
+            children = [self.migrate_step(ch) for ch in data.get("children", [])]
+            return self.make_block_step(
+                data.get("block_type", "block"),
+                meta=data.get("meta", {}),
+                schedule=data.get("schedule"),
+                settings=data.get("settings"),
+                children=children,
+            )
+        if st_type == "action":
+            return self.make_action_step(
+                data.get("name", ""),
+                args=data.get("args", {}),
+                schedule=data.get("schedule"),
+                settings=data.get("settings"),
+            )
+        return self.make_action_step(data.get("name", ""), args=data.get("args", {}))
+
+    def update_scope_options(self):
+        options = [("main", None, "메인 스크립트")]
+        for idx, fn in enumerate(self.functions):
+            label = f"함수: {fn.get('name', f'Function{idx+1}') }"
+            options.append(("function", idx, label))
+        self.scope_options = options
+        labels = [opt[2] for opt in options]
+        current = self.var_scope.get()
+        if not labels:
+            self.var_scope.set("")
+        elif current not in labels:
+            self.var_scope.set(labels[0])
+        if hasattr(self, "cb_scope"):
+            self.cb_scope["values"] = labels
+            if labels:
+                self.cb_scope.set(self.var_scope.get())
+            else:
+                self.cb_scope.set("")
+
+    def on_scope_changed(self, *_):
+        if hasattr(self, "cb_scope") and self.cb_scope.get() != self.var_scope.get():
+            self.var_scope.set(self.cb_scope.get())
+        self.refresh_steps()
+        self.update_preview()
+
+    def get_active_root(self) -> dict:
+        label = self.var_scope.get()
+        for kind, idx, lbl in getattr(self, "scope_options", []):
+            if lbl == label:
+                if kind == "function" and idx is not None and 0 <= idx < len(self.functions):
+                    return self.functions[idx].setdefault("body", self._make_root_block())
+                break
+        return self.root_block
+
+    def get_active_children(self) -> list:
+        return self.get_active_root().setdefault("children", [])
+
+    def rebuild_flat_steps(self):
+        self.flat_steps = []
+
+        def visit(children: list, depth: int, path_prefix: list[int]):
+            for idx, step in enumerate(children):
+                path = path_prefix + [idx]
+                self.flat_steps.append({
+                    "path": path,
+                    "step": step,
+                    "depth": depth,
+                })
+                if step.get("type") == "block":
+                    visit(step.get("children", []), depth + 1, path)
+
+        visit(self.get_active_children(), 0, [])
+
+    def summarize_schedule(self, schedule: dict | None) -> str:
+        sch = self.normalize_schedule(schedule)
+        parts = []
+        if sch.get("start_delay"):
+            parts.append(f"지연 {sch['start_delay']}ms")
+        if sch.get("repeat", 1) > 1:
+            parts.append(f"{sch['repeat']}회 반복")
+        if sch.get("interval"):
+            parts.append(f"간격 {sch['interval']}ms")
+        if sch.get("cooldown"):
+            parts.append(f"종료 후 {sch['cooldown']}ms")
+        return ", ".join(parts)
 
     # ---------- UI ----------
     def create_widgets(self):
@@ -562,15 +1219,28 @@ class ScriptBuilderApp(tk.Tk):
         center = ttk.Frame(mid); mid.add(center)
         ttk.Button(center, text="→ 추가(기본값)", command=self.add_selected_func, width=14).pack(pady=(10,4))
         ttk.Button(center, text="상세 입력…", command=self.add_selected_func_with_dialog, width=14).pack(pady=4)
+        ttk.Button(center, text="블록 추가…", command=self.add_block_step, width=14).pack(pady=4)
         ttk.Button(center, text="← 삭제", command=self.remove_selected_steps, width=14).pack(pady=4)
         ttk.Separator(center, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
         ttk.Button(center, text="위로 ↑", command=lambda: self.move_selected_steps(-1), width=14).pack(pady=4)
         ttk.Button(center, text="아래로 ↓", command=lambda: self.move_selected_steps(1), width=14).pack(pady=4)
         ttk.Button(center, text="복제", command=self.duplicate_selected_steps, width=14).pack(pady=12)
+        ttk.Button(center, text="들여쓰기", command=self.indent_selected_step, width=14).pack(pady=4)
+        ttk.Button(center, text="내어쓰기", command=self.outdent_selected_step, width=14).pack(pady=4)
 
         # 우: 스텝 리스트 + 미리보기
         right = ttk.Frame(mid); mid.add(right, weight=2)
-        self.lb_steps = tk.Listbox(right, activestyle="dotbox", selectmode=tk.EXTENDED, exportselection=False)
+        scope_frm = ttk.Frame(right)
+        scope_frm.pack(fill=tk.X, pady=(0,4))
+        ttk.Label(scope_frm, text="편집 범위:").pack(side=tk.LEFT)
+        self.cb_scope = ttk.Combobox(scope_frm, textvariable=self.var_scope, state="readonly", width=28)
+        self.cb_scope.pack(side=tk.LEFT, padx=(4,4))
+        self.cb_scope.bind("<<ComboboxSelected>>", self.on_scope_changed)
+        ttk.Button(scope_frm, text="함수 추가", command=self.add_local_function).pack(side=tk.LEFT, padx=(6,0))
+        ttk.Button(scope_frm, text="속성", command=self.configure_local_function).pack(side=tk.LEFT, padx=4)
+        ttk.Button(scope_frm, text="삭제", command=self.remove_local_function).pack(side=tk.LEFT)
+
+        self.lb_steps = tk.Listbox(right, activestyle="dotbox", selectmode=tk.BROWSE, exportselection=False)
         self.lb_steps.pack(fill=tk.BOTH, expand=True)
         self.lb_steps.bind("<Double-Button-1>", lambda e: self.edit_selected_step())
 
@@ -587,6 +1257,7 @@ class ScriptBuilderApp(tk.Tk):
         bottom.pack(fill=tk.X, pady=(8,0))
         ttk.Button(bottom, text="인수 편집", command=self.edit_selected_step).pack(side=tk.LEFT)
         ttk.Button(bottom, text="전체 삭제", command=self.clear_steps).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bottom, text="전역 설정…", command=self.open_global_settings).pack(side=tk.LEFT)
         ttk.Button(bottom, text="JSON 저장", command=self.save_project).pack(side=tk.LEFT, padx=12)
         ttk.Button(bottom, text="JSON 불러오기", command=self.load_project).pack(side=tk.LEFT)
         ttk.Button(bottom, text="Lua 내보내기", command=self.export_lua).pack(side=tk.RIGHT)
@@ -765,12 +1436,9 @@ class ScriptBuilderApp(tk.Tk):
         lines.append("세부 안내:")
         for detail in ev_meta.get("details", []):
             lines.append(f"- {detail}")
-        if self.var_enable_primary.get():
-            lines.append("- 좌클릭 이벤트 전달 설정: EnablePrimaryMouseButtonEvents(true)")
-        else:
-            lines.append("- 좌클릭 이벤트 전달 설정: EnablePrimaryMouseButtonEvents(false)")
+        lines.append(f"- 좌클릭 이벤트 전달 설정: EnablePrimaryMouseButtonEvents({'true' if self.var_enable_primary.get() else 'false'})")
         lines.append("")
-        # 요약 조건
+
         cond = []
         if ev_code:
             cond.append(f"event='{ev_code}'")
@@ -783,14 +1451,71 @@ class ScriptBuilderApp(tk.Tk):
         else:
             lines.append("실제 실행 조건: (항상 실행)")
         lines.append("")
-        if not self.steps:
-            lines.append("(스텝이 없습니다)")
-        for i, st in enumerate(self.steps, 1):
-            lines.append(f"{i}. {self.localized_step_desc(st)}")
+
+        lines.append("메인 스크립트:")
+        main_children = self.root_block.get("children", [])
+        if not main_children:
+            lines.append("  (스텝이 없습니다)")
+        else:
+            self._append_doc_steps(main_children, lines, depth=1)
+
+        if self.functions:
+            lines.append("")
+            lines.append("로컬 함수:")
+            for fn in self.functions:
+                name = fn.get("name", "")
+                params = ", ".join(fn.get("params", []))
+                lines.append(f"  - {name}({params})")
+                desc = fn.get("description", "")
+                if desc:
+                    for line in desc.splitlines():
+                        lines.append(f"      · {line}")
+                body = fn.get("body") or self._make_root_block()
+                self._append_doc_steps(body.get("children", []), lines, depth=2)
+
         return "\n".join(lines) + "\n"
 
+    def _append_doc_steps(self, steps: list, lines: list[str], depth: int):
+        prefix = "  " * depth + "- "
+        for step in steps:
+            desc = self.localized_step_desc(step)
+            schedule = self.summarize_schedule(step.get("schedule"))
+            if schedule:
+                desc += f" (스케줄: {schedule})"
+            lines.append(prefix + desc)
+            settings = step.get("settings") or {}
+            note = settings.get("note") or settings.get("notes")
+            if isinstance(note, str) and note.strip():
+                for line in note.strip().splitlines():
+                    lines.append("  " * (depth + 1) + f"· {line}")
+            if step.get("type") == "block":
+                self._append_doc_steps(step.get("children", []), lines, depth + 1)
+
     def localized_step_desc(self, step: dict) -> str:
-        name = step.get("name"); a = step.get("args", {})
+        if step.get("type") == "block":
+            block_type = step.get("block_type")
+            meta = step.get("meta", {}) or {}
+            label = meta.get("label") or meta.get("description") or ""
+            if block_type == "repeat":
+                count = int(meta.get("count", 1) or 1)
+                loop_var = meta.get("var_name") or meta.get("loop_var") or self.normalize_schedule(step.get("schedule")).get("loop_var", "i")
+                desc = f"반복 루프 {count}회 (변수 {loop_var})"
+            elif block_type == "while":
+                cond = meta.get("condition", "true") or "true"
+                desc = f"While 루프 조건: {cond}"
+            elif block_type == "if":
+                cond = meta.get("condition", "true") or "true"
+                desc = f"조건 분기: {cond}"
+            elif block_type == "root":
+                desc = "루트 블록"
+            else:
+                desc = f"블록({block_type})"
+            if label:
+                desc += f" — {label}"
+            return desc
+
+        name = step.get("name")
+        a = step.get("args", {}) or {}
         try:
             def _button_value(val):
                 try:
@@ -840,35 +1565,43 @@ class ScriptBuilderApp(tk.Tk):
                 return "실행 중 매크로 중지"
             if name == "SetMKeyState":
                 return f"M 키 상태 설정: M{int(a.get('mkey',1))}"
+            if name == "__CALL_USER_FUNCTION__":
+                target = a.get("func", "")
+                expr = str(a.get("arg_expr", "")).strip()
+                if expr:
+                    return f"사용자 함수 호출: {target}({expr})"
+                return f"사용자 함수 호출: {target}()"
         except Exception:
             pass
         return f"{name} (인수: {a})"
 
     # ---------- 스텝 조작 ----------
     def refresh_steps(self):
+        self.rebuild_flat_steps()
         self.lb_steps.delete(0, tk.END)
-        for st in self.steps:
-            self.lb_steps.insert(tk.END, self.render_step_label(st))
-        if self.steps:
-            self.lb_steps.see(tk.END)
+        for info in self.flat_steps:
+            indent = "    " * info["depth"]
+            label = self.render_step_label(info["step"])
+            self.lb_steps.insert(tk.END, indent + label)
+        if self.flat_steps:
+            self.lb_steps.see(len(self.flat_steps) - 1)
         self.update_preview()
 
-    def render_step_label(self, step):
-        legacy = self.var_show_legacy.get()
-        name = step["name"]; args = step.get("args", {})
-        if legacy:
-            if name == "MoveMouseTo":
-                x_px = int(args.get("x", 0)); y_px = int(args.get("y", 0))
-                return f"[MoveMouseTo] X={x_px}px, Y={y_px}px"
-            kv = ", ".join([f"{k}={v}" for k, v in args.items() if k != "k2_opt"]) or "(no args)"
-            return f"[{name}] {kv}"
-        else:
-            return self.localized_step_desc(step)
+    def render_step_label(self, step: dict) -> str:
+        desc = self.localized_step_desc(step)
+        parts = [desc]
+        if step.get("type") == "block":
+            parts.append(f"[{len(step.get('children', []))} 스텝]")
+        schedule_info = self.summarize_schedule(step.get("schedule"))
+        if schedule_info:
+            parts.append(f"(스케줄: {schedule_info})")
+        return " ".join(part for part in parts if part)
 
     def build_default_args(self, fdef: dict) -> dict:
         args = {}
         for spec in fdef.get("args", []):
-            name = spec["name"]; default = spec.get("default")
+            name = spec["name"]
+            default = spec.get("default")
             if fdef["name"] in ("MoveMouseTo", "MoveMouseToVirtual"):
                 if name == "x" and default == "__CENTER_X__":
                     args[name] = (self.captured_xy[0] if self.captured_xy else self.screen_w // 2)
@@ -880,48 +1613,20 @@ class ScriptBuilderApp(tk.Tk):
             if t == "int":
                 if isinstance(default, str):
                     default = default.replace("__CENTER_X__", str(self.screen_w // 2)).replace("__CENTER_Y__", str(self.screen_h // 2))
-                args[name] = int(default)
+                args[name] = int(default if default is not None else 0)
             elif t == "bool":
                 args[name] = bool(default)
+            elif t == "choice":
+                choices = spec.get("choices") or []
+                if not choices:
+                    args[name] = default if default is not None else ""
+                else:
+                    args[name] = default if default in choices else choices[0]
+            elif t == "raw":
+                args[name] = default or ""
             else:
                 args[name] = default
         return args
-
-    def add_selected_func(self):
-        # 기본값으로 즉시 추가
-        f = self.get_selected_catalog_func()
-        if not f:
-            messagebox.showinfo("안내", "함수를 선택하세요.")
-            return
-        step = {"name": f["name"], "args": self.build_default_args(f)}
-        sel = self.lb_steps.curselection()
-        if sel:
-            pos = sel[0] + 1
-            self.steps.insert(pos, step)
-            self.refresh_steps(); self.lb_steps.selection_clear(0, tk.END); self.lb_steps.selection_set(pos); self.lb_steps.see(pos)
-        else:
-            self.steps.append(step)
-            self.refresh_steps(); self.lb_steps.selection_clear(0, tk.END); self.lb_steps.selection_set(len(self.steps)-1); self.lb_steps.see(tk.END)
-        self.set_status(f"스텝 추가됨: {step['name']}")
-
-    def add_selected_func_with_dialog(self):
-        f = self.get_selected_catalog_func()
-        if not f:
-            messagebox.showinfo("안내", "함수를 선택하세요.")
-            return
-        dlg = ArgDialog(self, f, preset=self.build_default_args(f))
-        self.wait_window(dlg)
-        if dlg.result is None:
-            return
-        step = {"name": f["name"], "args": dlg.result}
-        sel = self.lb_steps.curselection()
-        if sel:
-            pos = sel[0] + 1
-            self.steps.insert(pos, step)
-            self.refresh_steps(); self.lb_steps.selection_clear(0, tk.END); self.lb_steps.selection_set(pos); self.lb_steps.see(pos)
-        else:
-            self.steps.append(step)
-            self.refresh_steps(); self.lb_steps.selection_clear(0, tk.END); self.lb_steps.selection_set(len(self.steps)-1); self.lb_steps.see(tk.END)
 
     def get_selected_catalog_func(self):
         sel = self.tree.selection()
@@ -932,88 +1637,362 @@ class ScriptBuilderApp(tk.Tk):
         if not vals:
             return None
         fname = vals.get("name")
-        return CATALOG_BY_NAME.get(fname)
+        fdef = CATALOG_BY_NAME.get(fname)
+        return copy.deepcopy(fdef) if fdef else None
 
-    def get_selected_indices(self):
-        sel = list(self.lb_steps.curselection())
-        return sorted(sel)
+    def get_selected_path(self) -> list[int] | None:
+        sel = self.lb_steps.curselection()
+        if not sel:
+            return None
+        idx = sel[0]
+        if idx >= len(self.flat_steps):
+            return None
+        return self.flat_steps[idx]["path"]
+
+    def select_path(self, path: list[int] | None):
+        self.lb_steps.selection_clear(0, tk.END)
+        if not path:
+            return
+        for idx, info in enumerate(self.flat_steps):
+            if info["path"] == path:
+                self.lb_steps.selection_set(idx)
+                self.lb_steps.see(idx)
+                break
+
+    def get_step_by_path(self, path: list[int]) -> dict | None:
+        node = self.get_active_root()
+        for idx in path:
+            children = node.setdefault("children", [])
+            if not (0 <= idx < len(children)):
+                return None
+            node = children[idx]
+        return node
+
+    def get_parent_children(self, path: list[int]) -> list:
+        if not path:
+            return self.get_active_children()
+        node = self.get_active_root()
+        for idx in path[:-1]:
+            children = node.setdefault("children", [])
+            if not (0 <= idx < len(children)):
+                return []
+            node = children[idx]
+        return node.setdefault("children", [])
+
+    def insert_step_after(self, path: list[int] | None, step: dict) -> list[int]:
+        if path is None:
+            children = self.get_active_children()
+            children.append(step)
+            return [len(children) - 1]
+        parent_children = self.get_parent_children(path)
+        insert_index = min(len(parent_children), path[-1] + 1)
+        parent_children.insert(insert_index, step)
+        return path[:-1] + [insert_index]
+
+    def add_selected_func(self):
+        fdef = self.get_selected_catalog_func()
+        if not fdef:
+            messagebox.showinfo("안내", "함수를 선택하세요.")
+            return
+        self.resolve_dynamic_choices(fdef)
+        if fdef["name"] == "__CALL_USER_FUNCTION__" and not self.get_user_function_names():
+            messagebox.showwarning("로컬 함수 없음", "먼저 '로컬 함수' 탭에서 함수를 추가하세요.")
+            return
+        args = self.build_default_args(fdef)
+        step = self.make_action_step(fdef["name"], args=args)
+        new_path = self.insert_step_after(self.get_selected_path(), step)
+        self.refresh_steps()
+        self.select_path(new_path)
+        self.set_status(f"스텝 추가됨: {step['name']}")
+
+    def add_selected_func_with_dialog(self):
+        fdef = self.get_selected_catalog_func()
+        if not fdef:
+            messagebox.showinfo("안내", "함수를 선택하세요.")
+            return
+        self.resolve_dynamic_choices(fdef)
+        if fdef["name"] == "__CALL_USER_FUNCTION__" and not self.get_user_function_names():
+            messagebox.showwarning("로컬 함수 없음", "먼저 '로컬 함수' 탭에서 함수를 추가하세요.")
+            return
+        preset_args = self.build_default_args(fdef)
+        dlg = ArgDialog(self, fdef, preset=preset_args, schedule=self.get_default_schedule(),
+                        settings={}, allow_schedule=True, allow_settings=True)
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        result = dlg.result
+        step = self.make_action_step(
+            fdef["name"],
+            args=result.get("args", {}),
+            schedule=result.get("schedule"),
+            settings=result.get("settings"),
+        )
+        new_path = self.insert_step_after(self.get_selected_path(), step)
+        self.refresh_steps()
+        self.select_path(new_path)
+        self.set_status(f"스텝 추가됨: {step['name']} (상세 입력)")
+
+    def add_block_step(self):
+        dlg = BlockDialog(self)
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        result = dlg.result
+        block = self.make_block_step(
+            result["block_type"],
+            meta=result.get("meta"),
+            schedule=result.get("schedule"),
+            settings=result.get("settings"),
+            children=[],
+        )
+        new_path = self.insert_step_after(self.get_selected_path(), block)
+        self.refresh_steps()
+        self.select_path(new_path)
+        self.set_status(f"블록 추가됨: {block['block_type']}")
 
     def remove_selected_steps(self):
-        idxs = self.get_selected_indices()
-        if not idxs: return
-        for i in reversed(idxs):
-            del self.steps[i]
+        path = self.get_selected_path()
+        if path is None:
+            return
+        parent_children = self.get_parent_children(path)
+        if not parent_children:
+            return
+        parent_children.pop(path[-1])
         self.refresh_steps()
-        if self.steps:
-            self.lb_steps.selection_set(min(idxs[0], len(self.steps)-1))
+        if parent_children:
+            new_idx = min(path[-1], len(parent_children) - 1)
+            new_path = path[:-1] + [new_idx] if path[:-1] else [new_idx]
+            self.select_path(new_path)
+        else:
+            self.select_path(path[:-1] if path[:-1] else None)
 
     def duplicate_selected_steps(self):
-        idxs = self.get_selected_indices()
-        if not idxs: return
-        insert_pos = idxs[-1] + 1
-        new_items = [json.loads(json.dumps(self.steps[i])) for i in idxs]
-        for off, st in enumerate(new_items):
-            self.steps.insert(insert_pos + off, st)
+        path = self.get_selected_path()
+        if path is None:
+            return
+        step = self.get_step_by_path(path)
+        if not step:
+            return
+        cloned = copy.deepcopy(step)
+        new_path = self.insert_step_after(path, cloned)
         self.refresh_steps()
-        # 새로 추가된 영역 선택
-        self.lb_steps.selection_clear(0, tk.END)
-        for j in range(insert_pos, insert_pos + len(new_items)):
-            self.lb_steps.selection_set(j)
-        self.lb_steps.see(insert_pos + len(new_items) - 1)
+        self.select_path(new_path)
 
     def move_selected_steps(self, delta: int):
-        idxs = self.get_selected_indices()
-        if not idxs: return
-        if delta < 0:
-            if idxs[0] == 0: return
-            for i in idxs:
-                self.steps[i-1], self.steps[i] = self.steps[i], self.steps[i-1]
-            new_sel = [i-1 for i in idxs]
-        else:
-            if idxs[-1] == len(self.steps)-1: return
-            for i in reversed(idxs):
-                self.steps[i+1], self.steps[i] = self.steps[i], self.steps[i+1]
-            new_sel = [i+1 for i in idxs]
+        path = self.get_selected_path()
+        if path is None:
+            return
+        parent_children = self.get_parent_children(path)
+        if not parent_children:
+            return
+        idx = path[-1]
+        new_idx = idx + delta
+        if not (0 <= new_idx < len(parent_children)):
+            return
+        parent_children[idx], parent_children[new_idx] = parent_children[new_idx], parent_children[idx]
+        new_path = path[:-1] + [new_idx]
         self.refresh_steps()
-        self.lb_steps.selection_clear(0, tk.END)
-        for i in new_sel:
-            self.lb_steps.selection_set(i)
-        self.lb_steps.see(new_sel[-1])
+        self.select_path(new_path)
 
-    def duplicate_step(self):
-        idx = self.lb_steps.curselection()
-        if not idx: return
-        pos = idx[0]
-        step = json.loads(json.dumps(self.steps[pos]))
-        self.steps.insert(pos+1, step)
-        self.refresh_steps(); self.lb_steps.selection_set(pos+1); self.lb_steps.see(pos+1)
+    def indent_selected_step(self):
+        path = self.get_selected_path()
+        if not path or path[-1] == 0:
+            return
+        parent_children = self.get_parent_children(path)
+        idx = path[-1]
+        prev_step = parent_children[idx - 1]
+        if prev_step.get("type") != "block":
+            messagebox.showinfo("안내", "이전 스텝이 블록이 아니어서 들여쓰기 할 수 없습니다.")
+            return
+        step = parent_children.pop(idx)
+        prev_step.setdefault("children", []).append(step)
+        new_path = path[:-1] + [idx - 1, len(prev_step["children"]) - 1]
+        self.refresh_steps()
+        self.select_path(new_path)
 
-    def move_step(self, delta: int):
-        idx = self.lb_steps.curselection()
-        if not idx: return
-        pos = idx[0]; newpos = pos + delta
-        if not (0 <= newpos < len(self.steps)): return
-        self.steps[pos], self.steps[newpos] = self.steps[newpos], self.steps[pos]
-        self.refresh_steps(); self.lb_steps.selection_set(newpos); self.lb_steps.see(newpos)
+    def outdent_selected_step(self):
+        path = self.get_selected_path()
+        if not path:
+            return
+        parent_path = path[:-1]
+        if not parent_path:
+            return
+        parent_children = self.get_parent_children(path)
+        if not parent_children or not (0 <= path[-1] < len(parent_children)):
+            return
+        step = parent_children.pop(path[-1])
+        grand_children = self.get_parent_children(parent_path)
+        insert_index = parent_path[-1] + 1 if parent_path else len(grand_children)
+        grand_children.insert(insert_index, step)
+        new_path = parent_path[:-1] + [insert_index] if parent_path[:-1] else [insert_index]
+        self.refresh_steps()
+        self.select_path(new_path)
 
     def clear_steps(self):
-        if not self.steps: return
-        if messagebox.askyesno("확인", "모든 스텝을 삭제할까요?"):
-            self.steps.clear(); self.refresh_steps()
+        children = self.get_active_children()
+        if not children:
+            return
+        if messagebox.askyesno("확인", "현재 범위의 모든 스텝을 삭제할까요?"):
+            children.clear()
+            self.refresh_steps()
 
     def edit_selected_step(self):
-        idx = self.lb_steps.curselection()
-        if not idx: return
-        pos = idx[0]; step = self.steps[pos]
-        fdef = CATALOG_BY_NAME.get(step["name"])
-        if not fdef:
-            messagebox.showerror("오류", f"정의되지 않은 함수: {step['name']}")
+        path = self.get_selected_path()
+        if path is None:
             return
-        dlg = ArgDialog(self, fdef, preset=step.get("args"))
+        step = self.get_step_by_path(path)
+        if not step:
+            return
+        if step.get("type") == "block":
+            if step.get("block_type") == "root":
+                messagebox.showinfo("안내", "루트 블록은 편집할 수 없습니다.")
+                return
+            dlg = BlockDialog(self, block=step)
+            self.wait_window(dlg)
+            if not dlg.result:
+                return
+            result = dlg.result
+            step["block_type"] = result["block_type"]
+            step["meta"] = result.get("meta", {})
+            step["schedule"] = self.normalize_schedule(result.get("schedule"))
+            step["settings"] = result.get("settings") or {}
+        else:
+            fdef = copy.deepcopy(CATALOG_BY_NAME.get(step.get("name")))
+            if not fdef:
+                messagebox.showerror("오류", f"정의되지 않은 함수: {step.get('name')}")
+                return
+            self.resolve_dynamic_choices(fdef)
+            dlg = ArgDialog(self, fdef, preset=step.get("args"), schedule=step.get("schedule"),
+                            settings=step.get("settings"), allow_schedule=True, allow_settings=True)
+            self.wait_window(dlg)
+            if not dlg.result:
+                return
+            result = dlg.result
+            step["args"] = result.get("args", {})
+            step["schedule"] = self.normalize_schedule(result.get("schedule"))
+            step["settings"] = result.get("settings") or {}
+        self.refresh_steps()
+        self.select_path(path)
+
+    # ---------- 함수/전역 설정 ----------
+    def get_current_function_index(self) -> int | None:
+        label = self.var_scope.get()
+        for kind, idx, lbl in getattr(self, "scope_options", []):
+            if lbl == label and kind == "function":
+                return idx
+        return None
+
+    def add_local_function(self):
+        dlg = FunctionDialog(self)
         self.wait_window(dlg)
-        if dlg.result is None: return
-        self.steps[pos]["args"] = dlg.result
-        self.refresh_steps(); self.lb_steps.selection_set(pos); self.lb_steps.see(pos)
+        if not dlg.result:
+            return
+        data = dlg.result
+        if any(fn.get("name") == data["name"] for fn in self.functions):
+            messagebox.showerror("오류", "동일한 이름의 함수가 이미 존재합니다.")
+            return
+        func = {
+            "name": data["name"],
+            "params": data.get("params", []),
+            "description": data.get("description", ""),
+            "settings": data.get("settings", {}),
+            "body": self._make_root_block(),
+        }
+        self.functions.append(func)
+        self.update_scope_options()
+        self.populate_func_tree()
+        target_label = f"함수: {func['name']}"
+        self.var_scope.set(target_label)
+        if hasattr(self, "cb_scope"):
+            self.cb_scope.set(target_label)
+        self.refresh_steps()
+        self.set_status(f"함수 추가됨: {func['name']}")
+
+    def configure_local_function(self):
+        idx = self.get_current_function_index()
+        if idx is None:
+            messagebox.showinfo("안내", "편집할 함수를 범위에서 선택하세요.")
+            return
+        func = self.functions[idx]
+        dlg = FunctionDialog(self, func)
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        data = dlg.result
+        new_name = data["name"]
+        if new_name != func["name"] and any(i != idx and f.get("name") == new_name for i, f in enumerate(self.functions)):
+            messagebox.showerror("오류", "동일한 이름의 함수가 이미 존재합니다.")
+            return
+        old_name = func["name"]
+        func["name"] = new_name
+        func["params"] = data.get("params", [])
+        func["description"] = data.get("description", "")
+        func["settings"] = data.get("settings", {})
+        if new_name != old_name:
+            self.replace_function_references(old_name, new_name)
+        self.update_scope_options()
+        self.populate_func_tree()
+        new_label = f"함수: {func['name']}"
+        self.var_scope.set(new_label)
+        if hasattr(self, "cb_scope"):
+            self.cb_scope.set(new_label)
+        self.refresh_steps()
+        self.set_status(f"함수 업데이트: {func['name']}")
+
+    def remove_local_function(self):
+        idx = self.get_current_function_index()
+        if idx is None:
+            messagebox.showinfo("안내", "삭제할 함수를 범위에서 선택하세요.")
+            return
+        func = self.functions[idx]
+        if not messagebox.askyesno("확인", f"함수 '{func['name']}'를 삭제할까요?"):
+            return
+        old_name = func["name"]
+        del self.functions[idx]
+        self.replace_function_references(old_name, None)
+        self.update_scope_options()
+        self.populate_func_tree()
+        if getattr(self, "scope_options", []):
+            first_label = self.scope_options[0][2]
+            self.var_scope.set(first_label)
+            if hasattr(self, "cb_scope"):
+                self.cb_scope.set(first_label)
+        else:
+            self.var_scope.set("")
+            if hasattr(self, "cb_scope"):
+                self.cb_scope.set("")
+        self.refresh_steps()
+        self.set_status(f"함수 삭제됨: {old_name}")
+
+    def replace_function_references(self, old: str, new: str | None):
+        def visit(container: list[dict]):
+            for st in container:
+                if st.get("type") == "action" and st.get("name") == "__CALL_USER_FUNCTION__":
+                    if st.get("args", {}).get("func") == old:
+                        st.setdefault("args", {})["func"] = new or ""
+                if st.get("type") == "block":
+                    visit(st.get("children", []))
+
+        visit(self.root_block.get("children", []))
+        for fn in self.functions:
+            body = fn.setdefault("body", self._make_root_block())
+            visit(body.get("children", []))
+
+    def open_global_settings(self):
+        dlg = GlobalSettingsDialog(self, self.global_settings)
+        self.wait_window(dlg)
+        if not dlg.result:
+            return
+        result = dlg.result
+        default_schedule = self.sanitize_schedule_dict(result.get("default_schedule"))
+        self.global_settings = {
+            "default_schedule": default_schedule,
+            "prelude": result.get("prelude", ""),
+            "notes": result.get("notes", ""),
+            "custom": result.get("custom", {}),
+        }
+        self.refresh_steps()
+        self.update_preview()
 
     # ---------- 저장/불러오기/내보내기 ----------
     def save_project(self):
@@ -1021,13 +2000,16 @@ class ScriptBuilderApp(tk.Tk):
             "trigger": {
                 "event": self.var_trigger_event.get(),
                 "arg": self.var_trigger_arg.get(),
-                "enable_primary": self.var_enable_primary.get()
+                "enable_primary": self.var_enable_primary.get(),
             },
-            "steps": self.steps,
+            "global_settings": self.global_settings,
+            "root": self.root_block,
+            "functions": self.functions,
         }
         path = filedialog.asksaveasfilename(title="프로젝트 저장", defaultextension=".json",
                                             filetypes=[["JSON","*.json"],["All Files","*.*"]])
-        if not path: return
+        if not path:
+            return
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         messagebox.showinfo("저장됨", f"프로젝트 저장: {path}")
@@ -1035,7 +2017,8 @@ class ScriptBuilderApp(tk.Tk):
     def load_project(self):
         path = filedialog.askopenfilename(title="프로젝트 불러오기",
                                           filetypes=[["JSON","*.json"],["All Files","*.*"]])
-        if not path: return
+        if not path:
+            return
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -1049,19 +2032,71 @@ class ScriptBuilderApp(tk.Tk):
                 arg_value = arg_meta.get("default", arg_meta.get("min", -1)) if arg_meta else -1
             self.var_trigger_arg.set(arg_value)
             self.var_enable_primary.set(bool(trig.get("enable_primary", True)))
-            self.steps = data.get("steps", [])
-            self.refresh_event_combobox(); self.refresh_steps()
+
+            loaded_global = data.get("global_settings")
+            if isinstance(loaded_global, dict):
+                self.global_settings = {
+                    "default_schedule": self.sanitize_schedule_dict(loaded_global.get("default_schedule")),
+                    "prelude": loaded_global.get("prelude", ""),
+                    "notes": loaded_global.get("notes", ""),
+                    "custom": loaded_global.get("custom", {}),
+                }
+            else:
+                self.global_settings = {
+                    "default_schedule": self.sanitize_schedule_dict({}),
+                    "prelude": "",
+                    "notes": "",
+                    "custom": {},
+                }
+
+            raw_root = data.get("root")
+            if isinstance(raw_root, dict):
+                self.root_block = self.migrate_step(raw_root)
+                self.root_block["block_type"] = "root"
+            else:
+                self.root_block = self._make_root_block()
+                for st in data.get("steps", []):
+                    self.root_block.setdefault("children", []).append(self.migrate_step(st))
+
+            self.functions = []
+            for fn_data in data.get("functions", []):
+                func = {
+                    "name": fn_data.get("name", f"Function{len(self.functions)+1}"),
+                    "params": fn_data.get("params", []),
+                    "description": fn_data.get("description", ""),
+                    "settings": fn_data.get("settings", {}),
+                    "body": self._make_root_block(),
+                }
+                body_data = fn_data.get("body")
+                if isinstance(body_data, dict):
+                    func["body"] = self.migrate_step(body_data)
+                    func["body"]["block_type"] = "root"
+                elif isinstance(body_data, list):
+                    func["body"]["children"] = [self.migrate_step(st) for st in body_data]
+                elif isinstance(fn_data.get("steps"), list):
+                    func["body"]["children"] = [self.migrate_step(st) for st in fn_data.get("steps", [])]
+                self.functions.append(func)
+
+            self.update_scope_options()
+            self.populate_func_tree()
+            self.refresh_event_combobox(reset_arg=True)
+            self.refresh_steps()
+            self.update_preview()
             messagebox.showinfo("완료", f"불러오기 성공: {path}")
         except Exception as e:
             messagebox.showerror("불러오기 실패", str(e))
 
     def export_lua(self):
-        if not self.steps:
+        has_steps = bool(self.root_block.get("children")) or any(
+            (fn.get("body") or {}).get("children") for fn in self.functions
+        )
+        if not has_steps:
             if not messagebox.askyesno("확인", "스텝이 비어 있습니다. 그래도 내보낼까요?"):
                 return
         path = filedialog.asksaveasfilename(title="Lua 내보내기", defaultextension=".lua",
                                             filetypes=[["Lua","*.lua"],["All Files","*.*"]])
-        if not path: return
+        if not path:
+            return
         lua = self.generate_lua()
         try:
             with open(path, "w", encoding="utf-8") as f:
@@ -1085,40 +2120,182 @@ class ScriptBuilderApp(tk.Tk):
     def generate_lua(self) -> str:
         lines = []
         lines.append("-- Generated by G HUB Lua Script Builder")
+        notes = self.global_settings.get("notes")
+        if isinstance(notes, str) and notes.strip():
+            for line in notes.strip().splitlines():
+                lines.append(f"-- {line}")
         if self.var_enable_primary.get():
             lines.append("EnablePrimaryMouseButtonEvents(true)")
+        custom = self.global_settings.get("custom")
+        if isinstance(custom, dict) and custom:
+            lines.append("-- 전역 설정")
+            for key, value in custom.items():
+                lines.append(f"--   {key}: {value}")
+        prelude = self.global_settings.get("prelude")
+        if isinstance(prelude, str) and prelude.strip():
+            lines.extend(prelude.splitlines())
         lines.append("")
+
+        for fn in self.functions:
+            name = fn.get("name", "")
+            if not name:
+                continue
+            params = ", ".join(fn.get("params", []))
+            lines.append(f"local function {name}({params})")
+            body = fn.get("body") or self._make_root_block()
+            body_lines = self.emit_steps_to_lua(body.get("children", []), "  ")
+            if not body_lines:
+                body_lines = ["  -- (no steps)"]
+            lines.extend(body_lines)
+            lines.append("end")
+            lines.append("")
+
         lines.append("function OnEvent(event, arg)")
-        ev = self.var_trigger_event.get(); ar = self.var_trigger_arg.get()
+        ev = self.var_trigger_event.get()
+        ar = self.var_trigger_arg.get()
         cond = []
-        if ev: cond.append(f"event == \"{ev}\"")
-        if ar != -1: cond.append(f"arg == {ar}")
+        if ev:
+            cond.append(f"event == \"{ev}\"")
+        if ar != -1:
+            cond.append(f"arg == {ar}")
         if cond:
-            lines.append(f"  if {' and '.join(cond)} then"); indent = "    "
+            lines.append(f"  if {' and '.join(cond)} then")
+            indent = "    "
         else:
             indent = "  "
-        for st in self.steps:
-            fdef = CATALOG_BY_NAME.get(st["name"])
-            if not fdef:
-                lines.append(indent + f"-- 정의 누락: {st['name']}"); continue
-            name = st["name"]; args = st.get("args", {})
-            if name == "MoveMouseTo":
-                x_px = int(args.get("x", 0)); y_px = int(args.get("y", 0))
-                x_abs = round(max(0, min(self.screen_w - 1, x_px)) * 65535 / max(1, self.screen_w - 1))
-                y_abs = round(max(0, min(self.screen_h - 1, y_px)) * 65535 / max(1, self.screen_h - 1))
-                lines.append(indent + f"MoveMouseTo({x_abs}, {y_abs})  -- ({x_px}px, {y_px}px)")
-            elif name == "MoveMouseToVirtual":
-                x_px = int(args.get("x", 0)); y_px = int(args.get("y", 0))
-                x_abs = round(max(0, min(self.screen_w - 1, x_px)) * 65535 / max(1, self.screen_w - 1))
-                y_abs = round(max(0, min(self.screen_h - 1, y_px)) * 65535 / max(1, self.screen_h - 1))
-                lines.append(indent + f"MoveMouseToVirtual({x_abs}, {y_abs})  -- ({x_px}px, {y_px}px)")
-            else:
-                call = format_call(fdef["call"], args)
-                lines.append(indent + call)
+        main_lines = self.emit_steps_to_lua(self.root_block.get("children", []), indent)
+        if not main_lines:
+            main_lines = [indent + "-- (no steps)"]
+        lines.extend(main_lines)
         if cond:
             lines.append("  end")
         lines.append("end")
         return "\n".join(lines) + "\n"
+
+    def emit_steps_to_lua(self, steps: list, indent: str) -> list[str]:
+        lines: list[str] = []
+        for step in steps:
+            lines.extend(self.emit_step_to_lua(step, indent))
+        return lines
+
+    def emit_step_to_lua(self, step: dict, indent: str) -> list[str]:
+        lines: list[str] = []
+        settings = step.get("settings") or {}
+        note = settings.get("note") or settings.get("notes")
+        if isinstance(note, str) and note.strip():
+            for line in note.strip().splitlines():
+                lines.append(indent + f"-- {line}")
+        for key, value in settings.items():
+            if key in ("note", "notes", "pre_lua", "post_lua"):
+                continue
+            lines.append(indent + f"-- {key}: {value}")
+        pre_lua = settings.get("pre_lua")
+        if isinstance(pre_lua, str) and pre_lua.strip():
+            for line in pre_lua.splitlines():
+                lines.append(indent + line)
+
+        def body(inner_indent: str) -> list[str]:
+            return self._emit_step_core_to_lua(step, inner_indent)
+
+        lines.extend(self.wrap_with_schedule(step.get("schedule"), indent, body))
+
+        post_lua = settings.get("post_lua")
+        if isinstance(post_lua, str) and post_lua.strip():
+            for line in post_lua.splitlines():
+                lines.append(indent + line)
+        return lines
+
+    def _emit_step_core_to_lua(self, step: dict, indent: str) -> list[str]:
+        st_type = step.get("type")
+        if st_type == "action":
+            return self.emit_action_to_lua(step, indent)
+        if st_type == "block":
+            return self.emit_block_to_lua(step, indent)
+        return [indent + f"-- 알 수 없는 스텝 타입: {st_type}"]
+
+    def emit_action_to_lua(self, step: dict, indent: str) -> list[str]:
+        name = step.get("name")
+        args = step.get("args", {}) or {}
+        if name == "__CALL_USER_FUNCTION__":
+            target = str(args.get("func", "")).strip()
+            expr = str(args.get("arg_expr", "")).strip()
+            if not target:
+                return [indent + "-- 사용자 함수 호출 대상 없음"]
+            call = f"{target}({expr})" if expr else f"{target}()"
+            return [indent + call]
+        fdef = CATALOG_BY_NAME.get(name)
+        if not fdef:
+            return [indent + f"-- 정의 누락: {name}"]
+        if name == "MoveMouseTo":
+            x_px = int(args.get("x", 0)); y_px = int(args.get("y", 0))
+            x_abs = round(max(0, min(self.screen_w - 1, x_px)) * 65535 / max(1, self.screen_w - 1))
+            y_abs = round(max(0, min(self.screen_h - 1, y_px)) * 65535 / max(1, self.screen_h - 1))
+            return [indent + f"MoveMouseTo({x_abs}, {y_abs})  -- ({x_px}px, {y_px}px)"]
+        if name == "MoveMouseToVirtual":
+            x_px = int(args.get("x", 0)); y_px = int(args.get("y", 0))
+            x_abs = round(max(0, min(self.screen_w - 1, x_px)) * 65535 / max(1, self.screen_w - 1))
+            y_abs = round(max(0, min(self.screen_h - 1, y_px)) * 65535 / max(1, self.screen_h - 1))
+            return [indent + f"MoveMouseToVirtual({x_abs}, {y_abs})  -- ({x_px}px, {y_px}px)"]
+        call = format_call(fdef["call"], args)
+        return [indent + call]
+
+    def emit_block_to_lua(self, step: dict, indent: str) -> list[str]:
+        block_type = step.get("block_type")
+        meta = step.get("meta", {}) or {}
+        label = meta.get("label") or meta.get("description")
+        lines: list[str] = []
+        if label:
+            lines.append(indent + f"-- {label}")
+        children = step.get("children", [])
+        if block_type == "repeat":
+            count = max(1, int(meta.get("count", 1) or 1))
+            loop_var = meta.get("var_name") or meta.get("loop_var") or self.normalize_schedule(step.get("schedule")).get("loop_var", "i")
+            lines.append(indent + f"for {loop_var}=1,{count} do")
+            lines.extend(self.emit_steps_to_lua(children, indent + "  "))
+            lines.append(indent + "end")
+            return lines
+        if block_type == "while":
+            condition = meta.get("condition", "true") or "true"
+            lines.append(indent + f"while {condition} do")
+            lines.extend(self.emit_steps_to_lua(children, indent + "  "))
+            lines.append(indent + "end")
+            return lines
+        if block_type == "if":
+            condition = meta.get("condition", "true") or "true"
+            lines.append(indent + f"if {condition} then")
+            lines.extend(self.emit_steps_to_lua(children, indent + "  "))
+            lines.append(indent + "end")
+            return lines
+        if block_type == "root":
+            return self.emit_steps_to_lua(children, indent)
+        lines.append(indent + f"-- 지원되지 않는 블록 타입: {block_type}")
+        lines.extend(self.emit_steps_to_lua(children, indent + "  "))
+        return lines
+
+    def wrap_with_schedule(self, schedule: dict | None, indent: str, body: Callable[[str], list[str]]) -> list[str]:
+        sch = self.normalize_schedule(schedule)
+        lines: list[str] = []
+        if sch.get("start_delay"):
+            lines.append(indent + f"Sleep({sch['start_delay']})")
+        repeat = sch.get("repeat", 1)
+        interval = sch.get("interval", 0)
+        cooldown = sch.get("cooldown", 0)
+        loop_var = sch.get("loop_var", "i") or "i"
+        if repeat > 1 or interval > 0:
+            lines.append(indent + f"for {loop_var}=1,{repeat} do")
+            inner_indent = indent + "  "
+            lines.extend(body(inner_indent))
+            if interval > 0:
+                if repeat > 1:
+                    lines.append(inner_indent + f"if {loop_var} < {repeat} then Sleep({interval}) end")
+                else:
+                    lines.append(inner_indent + f"Sleep({interval})")
+            lines.append(indent + "end")
+        else:
+            lines.extend(body(indent))
+        if cooldown > 0:
+            lines.append(indent + f"Sleep({cooldown})")
+        return lines
 
     # ---------- 유틸 ----------
     def on_ctrl_space_capture(self, *_):
@@ -1132,15 +2309,10 @@ class ScriptBuilderApp(tk.Tk):
         return "break"
 
     def quick_add_sleep(self):
-        step = {"name": "Sleep", "args": {"ms": 10}}
-        sel = self.lb_steps.curselection()
-        if sel:
-            pos = sel[0] + 1
-            self.steps.insert(pos, step)
-            self.refresh_steps(); self.lb_steps.selection_clear(0, tk.END); self.lb_steps.selection_set(pos); self.lb_steps.see(pos)
-        else:
-            self.steps.append(step)
-            self.refresh_steps(); self.lb_steps.selection_clear(0, tk.END); self.lb_steps.selection_set(len(self.steps)-1); self.lb_steps.see(tk.END)
+        step = self.make_action_step("Sleep", args={"ms": 10})
+        new_path = self.insert_step_after(self.get_selected_path(), step)
+        self.refresh_steps()
+        self.select_path(new_path)
         self.set_status("스텝 추가됨: Sleep(10)")
 
 # ==============================
@@ -1175,9 +2347,10 @@ def run_tests() -> int:
         print("[TEST] format_call 실패", file=sys.stderr); fails += 1
 
     try:
-        app = ScriptBuilderApp(); app.steps = [
-            {"name": "MoveMouseTo", "args": {"x": app.screen_w // 2, "y": app.screen_h // 2}},
-            {"name": "Sleep", "args": {"ms": 10}},
+        app = ScriptBuilderApp()
+        app.root_block["children"] = [
+            app.make_action_step("MoveMouseTo", {"x": app.screen_w // 2, "y": app.screen_h // 2}),
+            app.make_action_step("Sleep", {"ms": 10}),
         ]
         lua = app.generate_lua(); doc = app.generate_korean_doc()
         assert "MoveMouseTo(" in lua and ")  -- (" in lua and "Sleep(10)" in lua
