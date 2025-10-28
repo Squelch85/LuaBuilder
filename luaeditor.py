@@ -1789,17 +1789,33 @@ class ScriptBuilderApp(tk.Tk):
             self.lb_steps.selection_clear(0, tk.END)
 
     def duplicate_selected_steps(self):
-        paths = self.get_selected_paths()
-        if not paths:
+        indices = self.get_selected_indices()
+        if not indices:
             return
+        infos = [self.flat_steps[idx] for idx in indices]
+        grouped: dict[tuple[int, ...], list[list[int]]] = {}
+        for info in infos:
+            path = info["path"]
+            parent_key = tuple(path[:-1])
+            grouped.setdefault(parent_key, []).append(path)
+
         new_paths: list[list[int]] = []
-        for path in sorted(paths, reverse=True):
-            step = self.get_step_by_path(path)
-            if not step:
+        for parent_key, paths in grouped.items():
+            ordered = sorted(paths, key=lambda p: p[-1])
+            clones = []
+            for path in ordered:
+                step = self.get_step_by_path(path)
+                if step:
+                    clones.append(copy.deepcopy(step))
+            if not clones:
                 continue
-            cloned = copy.deepcopy(step)
-            new_path = self.insert_step_after(path, cloned)
-            new_paths.append(new_path)
+            parent_children = self.get_parent_children(ordered[-1])
+            insert_index = ordered[-1][-1] + 1
+            for offset, cloned in enumerate(clones):
+                target_index = insert_index + offset
+                parent_children.insert(target_index, cloned)
+                new_paths.append(list(parent_key) + [target_index])
+
         self.refresh_steps()
         if new_paths:
             self.select_paths(sorted(new_paths))
