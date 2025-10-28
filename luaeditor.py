@@ -1240,7 +1240,7 @@ class ScriptBuilderApp(tk.Tk):
         ttk.Button(scope_frm, text="속성", command=self.configure_local_function).pack(side=tk.LEFT, padx=4)
         ttk.Button(scope_frm, text="삭제", command=self.remove_local_function).pack(side=tk.LEFT)
 
-        self.lb_steps = tk.Listbox(right, activestyle="dotbox", selectmode=tk.BROWSE, exportselection=False)
+        self.lb_steps = tk.Listbox(right, activestyle="dotbox", selectmode=tk.EXTENDED, exportselection=False)
         self.lb_steps.pack(fill=tk.BOTH, expand=True)
         self.lb_steps.bind("<Double-Button-1>", lambda e: self.edit_selected_step())
 
@@ -1640,24 +1640,43 @@ class ScriptBuilderApp(tk.Tk):
         fdef = CATALOG_BY_NAME.get(fname)
         return copy.deepcopy(fdef) if fdef else None
 
+    def get_selected_indices(self) -> list[int]:
+        return [idx for idx in self.lb_steps.curselection() if idx < len(self.flat_steps)]
+
+    def get_selected_paths(self) -> list[list[int]]:
+        indices = self.get_selected_indices()
+        return [self.flat_steps[idx]["path"] for idx in indices]
+
     def get_selected_path(self) -> list[int] | None:
-        sel = self.lb_steps.curselection()
+        sel = self.get_selected_indices()
         if not sel:
             return None
-        idx = sel[0]
-        if idx >= len(self.flat_steps):
-            return None
+        idx = sel[-1]
         return self.flat_steps[idx]["path"]
 
     def select_path(self, path: list[int] | None):
-        self.lb_steps.selection_clear(0, tk.END)
         if not path:
+            self.lb_steps.selection_clear(0, tk.END)
             return
-        for idx, info in enumerate(self.flat_steps):
-            if info["path"] == path:
+        self.select_paths([path])
+
+    def select_indices(self, indices: list[int]):
+        self.lb_steps.selection_clear(0, tk.END)
+        if not indices:
+            return
+        first_visible = None
+        for idx in indices:
+            if 0 <= idx < len(self.flat_steps):
+                if first_visible is None:
+                    first_visible = idx
                 self.lb_steps.selection_set(idx)
-                self.lb_steps.see(idx)
-                break
+        if first_visible is not None:
+            self.lb_steps.see(first_visible)
+
+    def select_paths(self, paths: list[list[int]]):
+        targets = {tuple(path) for path in paths}
+        indices = [idx for idx, info in enumerate(self.flat_steps) if tuple(info["path"]) in targets]
+        self.select_indices(indices)
 
     def get_step_by_path(self, path: list[int]) -> dict | None:
         node = self.get_active_root()
@@ -1751,82 +1770,143 @@ class ScriptBuilderApp(tk.Tk):
         self.set_status(f"블록 추가됨: {block['block_type']}")
 
     def remove_selected_steps(self):
-        path = self.get_selected_path()
-        if path is None:
+        paths = self.get_selected_paths()
+        if not paths:
             return
-        parent_children = self.get_parent_children(path)
-        if not parent_children:
-            return
-        parent_children.pop(path[-1])
+        indices = self.get_selected_indices()
+        for path in sorted(paths, reverse=True):
+            if not path:
+                continue
+            parent_children = self.get_parent_children(path)
+            if not parent_children or not (0 <= path[-1] < len(parent_children)):
+                continue
+            parent_children.pop(path[-1])
         self.refresh_steps()
-        if parent_children:
-            new_idx = min(path[-1], len(parent_children) - 1)
-            new_path = path[:-1] + [new_idx] if path[:-1] else [new_idx]
-            self.select_path(new_path)
+        if self.flat_steps and indices:
+            new_idx = min(min(indices), len(self.flat_steps) - 1)
+            self.select_indices([new_idx])
         else:
-            self.select_path(path[:-1] if path[:-1] else None)
+            self.lb_steps.selection_clear(0, tk.END)
 
     def duplicate_selected_steps(self):
-        path = self.get_selected_path()
-        if path is None:
+        paths = self.get_selected_paths()
+        if not paths:
             return
-        step = self.get_step_by_path(path)
-        if not step:
-            return
-        cloned = copy.deepcopy(step)
-        new_path = self.insert_step_after(path, cloned)
+        new_paths: list[list[int]] = []
+        for path in sorted(paths, reverse=True):
+            step = self.get_step_by_path(path)
+            if not step:
+                continue
+            cloned = copy.deepcopy(step)
+            new_path = self.insert_step_after(path, cloned)
+            new_paths.append(new_path)
         self.refresh_steps()
-        self.select_path(new_path)
+        if new_paths:
+            self.select_paths(sorted(new_paths))
 
     def move_selected_steps(self, delta: int):
-        path = self.get_selected_path()
-        if path is None:
+        infos = [self.flat_steps[idx] for idx in self.get_selected_indices()]
+        if not infos:
             return
-        parent_children = self.get_parent_children(path)
+        parent_keys = {tuple(info["path"][:-1]) for info in infos}
+        if len(parent_keys) != 1:
+            messagebox.showinfo("안내", "같은 블록 내 스텝만 함께 이동할 수 있습니다.")
+            return
+        paths = sorted((info["path"] for info in infos), key=lambda p: p[-1])
+        indices = [path[-1] for path in paths]
+        if indices != list(range(indices[0], indices[0] + len(indices))):
+            messagebox.showinfo("안내", "연속된 스텝만 함께 이동할 수 있습니다.")
+            return
+        parent_children = self.get_parent_children(paths[0])
         if not parent_children:
             return
-        idx = path[-1]
-        new_idx = idx + delta
-        if not (0 <= new_idx < len(parent_children)):
+        if delta < 0:
+            if indices[0] == 0:
+                return
+        elif delta > 0:
+            if indices[-1] >= len(parent_children) - 1:
+                return
+        else:
             return
-        parent_children[idx], parent_children[new_idx] = parent_children[new_idx], parent_children[idx]
-        new_path = path[:-1] + [new_idx]
+        entries = [parent_children[idx] for idx in indices]
+        for idx in sorted(indices, reverse=True):
+            parent_children.pop(idx)
+        insert_at = indices[0] + delta
+        for offset, entry in enumerate(entries):
+            parent_children.insert(insert_at + offset, entry)
+        parent_path = list(paths[0][:-1])
+        new_paths = [parent_path + [insert_at + offset] for offset in range(len(entries))]
         self.refresh_steps()
-        self.select_path(new_path)
+        self.select_paths(new_paths)
 
     def indent_selected_step(self):
-        path = self.get_selected_path()
-        if not path or path[-1] == 0:
+        paths = self.get_selected_paths()
+        if not paths:
             return
-        parent_children = self.get_parent_children(path)
-        idx = path[-1]
-        prev_step = parent_children[idx - 1]
+        parent_keys = {tuple(path[:-1]) for path in paths}
+        if len(parent_keys) != 1:
+            messagebox.showinfo("안내", "같은 블록 내 스텝만 선택해야 들여쓰기 할 수 있습니다.")
+            return
+        paths = sorted(paths, key=lambda p: p[-1])
+        first = paths[0]
+        if first[-1] == 0:
+            return
+        parent_children = self.get_parent_children(first)
+        if not parent_children:
+            return
+        prev_step = parent_children[first[-1] - 1]
         if prev_step.get("type") != "block":
             messagebox.showinfo("안내", "이전 스텝이 블록이 아니어서 들여쓰기 할 수 없습니다.")
             return
-        step = parent_children.pop(idx)
-        prev_step.setdefault("children", []).append(step)
-        new_path = path[:-1] + [idx - 1, len(prev_step["children"]) - 1]
+        if [path[-1] for path in paths] != list(range(first[-1], first[-1] + len(paths))):
+            messagebox.showinfo("안내", "연속된 스텝만 들여쓰기 할 수 있습니다.")
+            return
+        moved = []
+        for path in sorted(paths, reverse=True):
+            siblings = self.get_parent_children(path)
+            moved.append(siblings.pop(path[-1]))
+        moved.reverse()
+        target_children = prev_step.setdefault("children", [])
+        start_index = len(target_children)
+        for step in moved:
+            target_children.append(step)
+        block_path = first[:-1] + [first[-1] - 1]
+        new_paths = [block_path + [start_index + offset] for offset in range(len(moved))]
         self.refresh_steps()
-        self.select_path(new_path)
+        self.select_paths(new_paths)
 
     def outdent_selected_step(self):
-        path = self.get_selected_path()
-        if not path:
+        paths = self.get_selected_paths()
+        if not paths:
             return
-        parent_path = path[:-1]
+        parent_keys = {tuple(path[:-1]) for path in paths}
+        if len(parent_keys) != 1:
+            messagebox.showinfo("안내", "같은 블록 내 스텝만 내어쓰기 할 수 있습니다.")
+            return
+        paths = sorted(paths, key=lambda p: p[-1])
+        parent_path = paths[0][:-1]
         if not parent_path:
             return
-        parent_children = self.get_parent_children(path)
-        if not parent_children or not (0 <= path[-1] < len(parent_children)):
+        parent_children = self.get_parent_children(paths[0])
+        if not parent_children:
             return
-        step = parent_children.pop(path[-1])
+        if [path[-1] for path in paths] != list(range(paths[0][-1], paths[0][-1] + len(paths))):
+            messagebox.showinfo("안내", "연속된 스텝만 내어쓰기 할 수 있습니다.")
+            return
         grand_children = self.get_parent_children(parent_path)
         insert_index = parent_path[-1] + 1 if parent_path else len(grand_children)
-        grand_children.insert(insert_index, step)
-        new_path = parent_path[:-1] + [insert_index] if parent_path[:-1] else [insert_index]
+        moved = [parent_children[idx] for idx in [path[-1] for path in paths]]
+        for idx in sorted([path[-1] for path in paths], reverse=True):
+            parent_children.pop(idx)
+        for offset, step in enumerate(moved):
+            grand_children.insert(insert_index + offset, step)
+        base_path = parent_path[:-1]
+        new_paths = [
+            (base_path + [insert_index + offset]) if base_path else [insert_index + offset]
+            for offset in range(len(moved))
+        ]
         self.refresh_steps()
-        self.select_path(new_path)
+        self.select_paths(new_paths)
 
     def clear_steps(self):
         children = self.get_active_children()
